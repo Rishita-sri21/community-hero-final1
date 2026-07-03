@@ -1,0 +1,142 @@
+{
+  "reports": [
+    {
+      "id": "rep-1",
+      "reporter": {
+        "name": "Sarah J.",
+        "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150"
+      },
+      "timeAgo": "2 mins ago",
+      "district": "Downtown",
+      "urgency": "High",
+      "category": "Vision AI: Pothole",
+      "matchPercentage": 98,
+      "title": "Large Pothole on Main St.",
+      "description": "Significant damage to the right lane causing traffic slowdowns. Needs immediate attention before rush hour.",
+      "image": "https://images.unsplash.com/photo-1515162305285-0293e4767cc2?auto=format&fit=crop&q=80&w=600",
+      "locationDetails": "Main St & 4th Ave",
+      "upvotes": 24,
+      "comments": 5,
+      "verified": true,
+      "coordinates": {
+        "top": "55%",
+        "left": "35%"
+      },
+      "icon": "warning"
+    },
+    {
+      "id": "rep-2",
+      "reporter": {
+        "name": "Anonymous",
+        "avatar": ""
+      },
+      "timeAgo": "15 mins ago",
+      "district": "Riverside Park",
+      "urgency": "Medium",
+      "category": "Vision AI: Graffiti",
+      "matchPercentage": 85,
+      "title": "Graffiti on Park Bench",
+      "description": "New tags appeared on the benches near the east entrance overnight.",
+      "upvotes": 8,
+      "comments": 0,
+      "verified": false,
+      "coordinates": {
+        "top": "45%",
+        "left": "65%"
+      },
+      "icon": "potted_plant"
+    }
+  ],
+  "squads": [
+    {
+      "id": "sqd-1",
+      "name": "Riverside Cleanup",
+      "description": "Clearing debris and planting native species along the east river bank.",
+      "category": "park",
+      "icon": "park",
+      "distance": "3 miles away",
+      "volunteersCount": 12,
+      "volunteersMax": 20
+    }
+  ],
+  "leaderboard": [
+    {
+      "rank": 1,
+      "name": "David K.",
+      "avatar": "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=150",
+      "points": 4200
+    },
+    {
+      "rank": 2,
+      "name": "Sarah Jenkins (You)",
+      "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150",
+      "points": 3860,
+      "isCurrentUser": true
+    }
+  ],
+  "rewards": [
+    {
+      "id": "rew-1",
+      "title": "Local Roasters Voucher",
+      "description": "Enjoy a free coffee and pastry at any participating neighborhood cafe.",
+      "cost": 1200,
+      "image": "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&q=80&w=300"
+    }
+  ],
+  "badges": [
+    {
+      "id": "bdg-1",
+      "name": "Eco Warrior",
+      "icon": "eco",
+      "gradient": "from-teal-500 to-emerald-500",
+      "unlocked": true
+    },
+    {
+      "id": "bdg-2",
+      "name": "Pavement Pioneer",
+      "icon": "pedal_bike",
+      "gradient": "from-indigo-500 to-blue-500",
+      "unlocked": true
+    }
+  ],
+  "transformations": [
+    {
+      "id": "trf-1",
+      "title": "Sunnydale Park Revival",
+      "category": "Park Cleanup",
+      "description": "A community effort cleared 50 bags of debris and restored the park's vibrant ecosystem.",
+      "beforeImage": "https://images.unsplash.com/photo-1515162305285-0293e4767cc2?auto=format&fit=crop&q=80&w=600",
+      "afterImage": "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&q=80&w=600",
+      "heroesCount": 15,
+      "heroesAvatars": []
+    }
+  ],
+  "userSession": {
+    "isLoggedIn": true,
+    "userName": "Sarah Jenkins",
+    "points": 3860,
+    "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150",
+    "redeemedRewardIds": [],
+    "unlockedBadgeIds": [
+      "bdg-1",
+      "bdg-2"
+    ],
+    "joinedSquadIds": [],
+    "email": "sarah@hero.org"
+  },
+  "users": [
+    {
+      "email": "sarah@hero.org",
+      "password": "password123",
+      "name": "Sarah Jenkins",
+      "points": 3860,
+      "avatar": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=150",
+      "redeemedRewardIds": [],
+      "unlockedBadgeIds": [
+        "bdg-1",
+        "bdg-2"
+      ],
+      "joinedSquadIds": []
+    }
+  ]
+}
