@@ -6,7 +6,8 @@ import { api } from '../lib/api';
 interface CameraVerificationModalProps {
   report: Report;
   onClose: () => void;
-  onSuccess: (updatedPoints: number) => void;
+  // Receives the user's new points total as computed by the server
+  onSuccess: (totalPoints: number | null) => void;
 }
 
 export default function CameraVerificationModal({
@@ -18,6 +19,7 @@ export default function CameraVerificationModal({
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [auditResult, setAuditResult] = useState<any>(null);
   const [heroPoints, setHeroPoints] = useState<number>(150);
+  const [totalPoints, setTotalPoints] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
   
   // Camera streams
@@ -99,6 +101,7 @@ export default function CameraVerificationModal({
       if (response.success && response.auditResult?.success) {
         setAuditResult(response.auditResult);
         setHeroPoints(response.heroPointsAwarded || 150);
+        setTotalPoints(response.userSession?.points ?? null);
         setStep('certificate');
       } else {
         setErrorMessage(response.message || "Civic AI Vision was unable to verify resolution of the reported issue. Please capture a clearer picture directly showing the completed repair.");
@@ -112,7 +115,7 @@ export default function CameraVerificationModal({
   };
 
   const handleFinish = () => {
-    onSuccess(heroPoints);
+    onSuccess(totalPoints);
   };
 
   return (

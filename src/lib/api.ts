@@ -1,8 +1,5 @@
 import { Report } from '../types';
-
-const API_URL =
-import.meta.env.VITE_API_URL ||
-'https://community-hero-mwwl.onrender.com';
+import { API_URL } from '../config';
 
 export interface ChatMessage {
 role: 'user' | 'model';
@@ -22,7 +19,7 @@ safetyScoreIncrease: number;
 };
 heroPointsAwarded?: number;
 userSession?: {
-points: number;
+points: number | null;
 };
 }
 
@@ -86,8 +83,6 @@ async register(
   avatar?: string,
   role?: string
 ): Promise<AuthResponse> {
-  console.log("1. Sending request");
-
   const res = await apiFetch("/api/auth/register", {
     method: "POST",
     headers: makeHeaders(),
@@ -100,17 +95,15 @@ async register(
     }),
   });
 
-  console.log("2. Status:", res.status);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({
+      error: 'Registration failed',
+    }));
+    throw new Error(err.error || 'Registration failed');
+  }
 
-  const raw = await res.text();
-  console.log("3. Raw:", raw);
-
-  const data = JSON.parse(raw);
-  console.log("4. Parsed:", data);
-
+  const data: AuthResponse = await res.json();
   localStorage.setItem(TOKEN_KEY, data.token);
-
-  console.log("5. Returning");
 
   return data;
 },
@@ -185,7 +178,7 @@ return res.json();
 
 },
 
-async createReport(report: Partial<Report>) {
+async createReport(report: Partial<Report>): Promise<{ report: Report; points: number | null }> {
 const res = await apiFetch('/api/reports', {
 method: 'POST',
 headers: makeHeaders(),
@@ -197,7 +190,10 @@ if (!res.ok) {
   throw new Error('Failed to create report');
 }
 
-return res.json();
+const data = await res.json();
+// Older backends returned the bare report; accept both so the frontend and
+// backend can be deployed independently.
+return data.report ? data : { report: data, points: null };
 
 
 },
@@ -208,17 +204,17 @@ method: 'POST',
 headers: makeHeaders(),
 });
 
-```
+
 if (!res.ok) {
   throw new Error('Failed to upvote report');
 }
 
 return res.json();
-```
+
 
 },
 
-async verifyReport(id: string) {
+async verifyReport(id: string): Promise<{ report: Report; points: number | null }> {
 const res = await apiFetch(`/api/reports/${id}/verify`, {
 method: 'POST',
 headers: makeHeaders(),
@@ -234,7 +230,7 @@ return res.json();
 
 },
 
-async resolveReport(reportId: string, imageBase64: string) {
+async resolveReport(reportId: string, imageBase64: string): Promise<ResolveResponse> {
 const res = await apiFetch('/api/reports/resolve', {
 method: 'POST',
 headers: makeHeaders(),
@@ -304,20 +300,13 @@ return res.json();
 },
 
 async updateDistrict(district: string) {
-  console.log("Sending district:", district);
-  console.log("Token:", localStorage.getItem("community_hero_token"));
-
   const res = await apiFetch("/api/users/update-district", {
     method: "POST",
     headers: makeHeaders(),
     body: JSON.stringify({ district }),
   });
 
-  console.log("Status:", res.status);
-
   const text = await res.text();
-  console.log("Response:", text);
-
   if (!res.ok) {
     throw new Error(text);
   }

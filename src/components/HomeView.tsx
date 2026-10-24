@@ -7,6 +7,7 @@ interface HomeViewProps {
   userName: string;
   points: number;
   addPoints: (amount: number) => void;
+  setPoints: (total: number) => void;
   setView: (v: string) => void;
   reports: Report[];
   setReports: React.Dispatch<React.SetStateAction<Report[]>>;
@@ -17,6 +18,7 @@ export default function HomeView({
   userName,
   points,
   addPoints,
+  setPoints,
   setView,
   reports,
   setReports,
@@ -404,8 +406,8 @@ export default function HomeView({
           <CameraVerificationModal 
             report={resolvingReport}
             onClose={() => setResolvingReport(null)}
-            onSuccess={(earned) => {
-              addPoints(earned);
+            onSuccess={(totalPoints) => {
+              if (totalPoints !== null) setPoints(totalPoints);
               setReports(prev => prev.filter(r => r.id !== resolvingReport.id));
               setResolvingReport(null);
             }}
