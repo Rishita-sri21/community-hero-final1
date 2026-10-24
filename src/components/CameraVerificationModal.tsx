@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Report } from '../types';
 import { api } from '../lib/api';
@@ -118,13 +119,14 @@ export default function CameraVerificationModal({
     onSuccess(totalPoints);
   };
 
-  return (
-    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-center justify-center p-4 overflow-y-auto">
+  // Rendered into document.body so it sits above the fixed header
+  return createPortal(
+    <div className="fixed inset-0 bg-slate-900/80 backdrop-blur-md z-[100] flex items-start sm:items-center justify-center p-4 overflow-y-auto">
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95 }}
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-white/20 overflow-hidden relative"
+        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-white/20 overflow-hidden relative my-auto"
       >
         {/* Banner header */}
         <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-5 text-white flex justify-between items-center">
@@ -407,5 +409,5 @@ export default function CameraVerificationModal({
         </div>
       </motion.div>
     </div>
-  );
+  , document.body);
 }
