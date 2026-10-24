@@ -1,13 +1,10 @@
 import mongoose from "mongoose";
 
+// Throws if the connection fails. The app cannot work without the users
+// database, so the caller (server.ts) decides to stop the process.
 const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI!);
-    console.log("MongoDB Connected");
-  } catch (err: any) {
-    console.log("MongoDB unavailable. Continuing without database.");
-    console.log(err.message);
-  }
+  await mongoose.connect(process.env.MONGODB_URI!);
+  console.log("MongoDB Connected");
 };
 
 export default connectDB;

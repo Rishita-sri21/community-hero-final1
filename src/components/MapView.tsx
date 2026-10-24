@@ -9,6 +9,8 @@ interface MapViewProps {
   reports: Report[];
   setReports: React.Dispatch<React.SetStateAction<Report[]>>;
   addPoints: (amount: number) => void;
+  // Sets the user's total to the value the server returned after it awarded points itself
+  setPoints: (total: number) => void;
   innerTab: 'map' | 'feed' | 'analytics';
   setInnerTab: (t: 'map' | 'feed' | 'analytics') => void;
   userDistrict?: string;
@@ -67,6 +69,7 @@ export default function MapView({
   reports,
   setReports,
   addPoints,
+  setPoints,
   innerTab,
   setInnerTab,
   userDistrict
@@ -302,9 +305,11 @@ const [loadingMission, setLoadingMission] = useState(false);
   lng: selectedCoordinates?.lng,
 };
 
-      const created = await api.createReport(partialReport);
+      const { report: created, points: updatedPoints } = await api.createReport(partialReport);
       setReports([created, ...reports]);
-      addPoints(20);
+      if (updatedPoints !== null) {
+        setPoints(updatedPoints);
+      }
 
       // Reset fields
       setNewReportTitle('');
@@ -350,7 +355,7 @@ const [loadingMission, setLoadingMission] = useState(false);
       const { report: updated, points: updatedPoints } = await api.verifyReport(id);
       setReports(prev => prev.map(rep => rep.id === id ? updated : rep));
       if (updatedPoints !== null) {
-        addPoints(15);
+        setPoints(updatedPoints);
       }
     } catch (err) {
       console.error('Verify error:', err);
@@ -1085,8 +1090,8 @@ const [loadingMission, setLoadingMission] = useState(false);
           <CameraVerificationModal 
             report={resolvingReport}
             onClose={() => setResolvingReport(null)}
-            onSuccess={(updatedPoints) => {
-              addPoints(updatedPoints);
+            onSuccess={(totalPoints) => {
+              if (totalPoints !== null) setPoints(totalPoints);
               setReports(prev => prev.filter(r => r.id !== resolvingReport.id));
               setResolvingReport(null);
             }}

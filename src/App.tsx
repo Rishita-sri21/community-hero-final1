@@ -10,7 +10,6 @@ import AdminConsole from './components/AdminConsole';
 import AIAssistantWidget from './components/AIAssistantWidget';
 import { Report, Squad, Citizen, Transformation } from './types';
 import { api } from './lib/api';
-import { API_URL } from "../config";
 
 export default function App() {
   const [view, setView] = useState<string>('home');
@@ -318,6 +317,7 @@ export default function App() {
                 userName={currentUser.name.split(' ')[0]} 
                 points={points} 
                 addPoints={handleAddPoints} 
+                setPoints={setPoints}
                 setView={handleNavClick}
                 reports={reports}
                 setReports={setReports}
@@ -330,6 +330,7 @@ export default function App() {
                 reports={reports}
                 setReports={setReports}
                 addPoints={handleAddPoints}
+                setPoints={setPoints}
                 innerTab={mapTab}
                 setInnerTab={setMapTab}
                 userDistrict={currentUser?.district}

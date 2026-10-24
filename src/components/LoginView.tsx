@@ -84,13 +84,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     try {
       if (isRegister) {
         const data = await api.register(name, email, password, selectedAvatar, selectedRole);
-        console.log("REGISTER DATA:", data);
-console.log("USER:", data.user);
-console.log("TOKEN:", data.token);
-console.log("onLoginSuccess:", onLoginSuccess);
-console.log(typeof onLoginSuccess);
-
-onLoginSuccess(data.user);
+        onLoginSuccess(data.user);
       } else {
         const data = await api.login(email, password);
         onLoginSuccess(data.user);

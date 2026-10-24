@@ -30,6 +30,13 @@ export const protect =
    req.user =
    await User.findById(decoded.id);
 
+   // A valid token for a deleted account must not reach routes that use req.user
+   if(!req.user){
+     return res.status(401).json({
+        error:"User no longer exists"
+     });
+   }
+
    next();
 
  }catch{
