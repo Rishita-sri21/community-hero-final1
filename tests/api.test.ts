@@ -5,11 +5,18 @@ import app from '../app';
 // These tests cover routes that don't need MongoDB. Everything that reads or writes data
 // is tested in points.test.ts and reports.test.ts, which run against a real MongoDB.
 
-describe('health', () => {
-  it('reports the server is up', async () => {
+describe('health and headers', () => {
+  it('reports unhealthy while the database is unreachable', async () => {
+    // No MongoDB connection in this file, so the host's health check should fail
     const res = await request(app).get('/api/health');
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: 'ok' });
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ status: 'degraded', database: 'disconnected' });
+  });
+
+  it('sends basic security headers', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['x-frame-options']).toBe('DENY');
   });
 });
 

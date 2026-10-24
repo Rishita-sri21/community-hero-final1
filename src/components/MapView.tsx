@@ -20,6 +20,7 @@ interface MapViewProps {
   innerTab: 'map' | 'feed' | 'analytics';
   setInnerTab: (t: 'map' | 'feed' | 'analytics') => void;
   userDistrict?: string;
+  liveConnected?: boolean;
 }
 
 
@@ -75,7 +76,8 @@ export default function MapView({
   setPoints,
   innerTab,
   setInnerTab,
-  userDistrict
+  userDistrict,
+  liveConnected
 }: MapViewProps) {
   // Feed Filters
   const [urgencyFilter, setUrgencyFilter] = useState<'All' | 'High' | 'Medium' | 'Low'>('All');
@@ -319,7 +321,8 @@ const [loadingMission, setLoadingMission] = useState(false);
         const km = distanceBetweenKm({ lat: centerLat, lng: centerLng }, { lat: created.lat, lng: created.lng });
         created.distanceKm = Math.round(km * 10) / 10;
       }
-      setReports([created, ...reports]);
+      // The live update for this report may have arrived first; keep a single copy
+      setReports(prev => [created, ...prev.filter(r => r.id !== created.id)]);
       if (updatedPoints !== null) {
         setPoints(updatedPoints);
         toast.success(`Report posted! +${POINTS.REPORT_CREATED} Hero Points`);
@@ -383,6 +386,15 @@ const [loadingMission, setLoadingMission] = useState(false);
             {innerTab === 'map' && "Tactical Map"}
             {innerTab === 'feed' && "Live Impact Feed"}
             {innerTab === 'analytics' && "Impact Analytics"}
+            <span
+              className={`ml-3 align-middle inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                liveConnected ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-slate-100 text-slate-500 border border-slate-200'
+              }`}
+              title={liveConnected ? 'New reports and votes appear here as they happen' : 'Reconnecting to live updates'}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`}></span>
+              {liveConnected ? 'Live' : 'Offline'}
+            </span>
           </h1>
           <p className="font-sans text-sm text-slate-500 max-w-2xl leading-relaxed">
             {innerTab === 'map' && "Interactive tactical community map. Drag, zoom, track reports, or click anywhere to drop a new issue pin."}

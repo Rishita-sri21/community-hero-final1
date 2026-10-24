@@ -7,6 +7,8 @@ import Report from '../models/Report';
 import AuditLog from '../models/AuditLog';
 import { generateToken } from '../utils/jwt';
 import { seedDemoReports } from '../services/reports';
+import type { AddressInfo } from 'net';
+import { openStream } from './helpers/stream';
 
 // Report storage, photos and location search, against a real MongoDB (see points.test.ts).
 const MONGO_URI = process.env.TEST_MONGODB_URI;
@@ -166,6 +168,40 @@ describe.skipIf(!MONGO_URI)('reports (MongoDB)', () => {
     expect(logs.status).toBe(200);
     expect(logs.body.map((l: any) => l.event)).toEqual(expect.arrayContaining(['REPORT_CREATED', 'REPORT_VERIFIED']));
     expect(logs.body[0]).toHaveProperty('id');
+  });
+
+  it('reports healthy once the database is connected', async () => {
+    const res = await request(app).get('/api/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok', database: 'connected' });
+  });
+
+  it('pushes new reports, votes and resolutions to connected browsers', async () => {
+    process.env.SIMULATE_AI_VERIFICATION = 'true';
+    const server = app.listen(0);
+    await new Promise((r) => server.once('listening', r));
+    const stream = await openStream(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+
+    try {
+      const reporter = await createUser('Ny');
+      const neighbor = await createUser('Os');
+      const id = (await postReport(reporter.token, { title: 'Live one', lat: 40.7, lng: -74 })).body.report.id;
+
+      const created = await stream.next('report.created');
+      expect(created.report).toMatchObject({ id, title: 'Live one', upvotes: 0 });
+      expect(created.report).not.toHaveProperty('isMine');
+      expect(JSON.stringify(created)).not.toContain('ny@example.com');
+
+      await request(app).post(`/api/reports/${id}/upvote`).set(auth(neighbor.token));
+      expect((await stream.next('report.updated')).report).toMatchObject({ id, upvotes: 1 });
+
+      await request(app).post('/api/reports/resolve').set(auth(neighbor.token)).send({ reportId: id, image: TINY_JPEG_URL });
+      expect(await stream.next('report.resolved')).toEqual({ type: 'report.resolved', id });
+    } finally {
+      stream.close();
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
   });
 
   it('seeds example reports into an empty database only once', async () => {

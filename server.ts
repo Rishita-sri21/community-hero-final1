@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import bcrypt from 'bcryptjs';
+import mongoose from 'mongoose';
 import app from './app';
 import User from './models/User';
 import connectDB from './config/db';
@@ -108,9 +109,23 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
   });
+
+  // Hosts send SIGTERM before replacing the server during a deploy. Stop taking new
+  // connections, close the database cleanly, and give up after 10 seconds, since open
+  // live-update streams would otherwise keep the server alive.
+  const shutdown = (signal: string) => {
+    console.log(`${signal} received, shutting down`);
+    setTimeout(() => process.exit(0), 10_000).unref();
+    server.close(() => {
+      mongoose.disconnect().finally(() => process.exit(0));
+    });
+    server.closeAllConnections?.();
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer();
