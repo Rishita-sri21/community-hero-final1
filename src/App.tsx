@@ -8,6 +8,7 @@ import { LoginView } from './components/LoginView';
 import { OnboardingLocationSetup } from './components/OnboardingLocationSetup';
 import AdminConsole from './components/AdminConsole';
 import AIAssistantWidget from './components/AIAssistantWidget';
+import Toaster from './components/Toaster';
 import { Report, Squad, Citizen, Transformation } from './types';
 import { api } from './lib/api';
 
@@ -21,7 +22,7 @@ export default function App() {
   const [loading, setLoading] = useState<boolean>(true);
 
   // Authentication states
-  const [currentUser, setCurrentUser] = useState<{ id: string; name: string; email: string; points: number; avatar: string; joinedSquads?: string[] } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ _id: string; name: string; email: string; points: number; avatar: string; joinedSquads?: string[]; district?: string; role?: string } | null>(null);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
 
   // Initialize Squads list
@@ -58,14 +59,6 @@ export default function App() {
     },
   ]);
 
-  // Initialize Leaderboard
-  const [leaderboard, setLeaderboard] = useState<Citizen[]>([
-    { rank: 1, name: 'Elena Rostova', avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150', points: 3100 },
-    { rank: 2, name: 'Marcus Thompson', avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150', points: 2450 },
-    { rank: 3, name: 'Samira Khan', avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150', points: 1800 },
-    { rank: 4, name: 'You', avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150', points: 480, isCurrentUser: true }
-  ]);
-
   // Check active user session on startup
   useEffect(() => {
     const checkSession = async () => {
@@ -83,27 +76,23 @@ export default function App() {
     checkSession();
   }, []);
 
-  // Synchronize currently logged-in user points on leaderboard whenever points state changes
+  // Leaderboard comes from the server (ranked by real points in MongoDB)
+  const [leaderboard, setLeaderboard] = useState<Citizen[]>([]);
+
   useEffect(() => {
-    if (!currentUser) return;
-    setLeaderboard(prev => {
-      const updated = prev.map(cit => {
-        if (cit.isCurrentUser || cit.name.includes('(You)') || cit.name === 'You') {
-          return { 
-            ...cit, 
-            points: points, 
-            name: `${currentUser.name} (You)`,
-            avatar: currentUser.avatar || cit.avatar 
-          };
-        }
-        return cit;
-      });
-      // Re-sort leaderboard by points descending
-      const sorted = [...updated].sort((a, b) => b.points - a.points);
-      // Re-rank items
-      return sorted.map((cit, idx) => ({ ...cit, rank: idx + 1 }));
-    });
-  }, [points, currentUser]);
+    if (!currentUser || view !== 'squads') return;
+    api.getLeaderboard()
+      .then((entries) => {
+        setLeaderboard(entries.map((e) => ({
+          rank: e.rank,
+          name: e.userId === currentUser._id ? `${e.name} (You)` : e.name,
+          avatar: e.avatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150',
+          points: e.points,
+          isCurrentUser: e.userId === currentUser._id,
+        })));
+      })
+      .catch((err) => console.warn('Could not load leaderboard', err));
+  }, [currentUser, view, points]);
 
   // Initialize transformations success stories
   const [transformations] = useState<Transformation[]>([
@@ -197,36 +186,6 @@ export default function App() {
     fetchReports();
   }, [currentUser]);
 
-  const handleSpendPoints = async (amount: number): Promise<boolean> => {
-    try {
-      const res = await api.spendPoints(amount);
-      if (res.success) {
-        setPoints(res.points);
-        return true;
-      }
-      return false;
-    } catch (err) {
-      console.error('Spend points error:', err);
-      if (points >= amount) {
-        setPoints(prev => prev - amount);
-        return true;
-      }
-      return false;
-    }
-  };
-
-  const handleAddPoints = async (amount: number) => {
-    try {
-      const res = await api.addPoints(amount);
-      if (res.success) {
-        setPoints(res.points);
-      }
-    } catch (err) {
-      console.error('Add points error, falling back to client-only increment:', err);
-      setPoints(prev => prev + amount);
-    }
-  };
-
   const handleNavClick = (targetView: string) => {
     if (targetView.includes(':')) {
       const [main, sub] = targetView.split(':');
@@ -316,7 +275,6 @@ export default function App() {
               <HomeView 
                 userName={currentUser.name.split(' ')[0]} 
                 points={points} 
-                addPoints={handleAddPoints} 
                 setPoints={setPoints}
                 setView={handleNavClick}
                 reports={reports}
@@ -329,7 +287,6 @@ export default function App() {
               <MapView 
                 reports={reports}
                 setReports={setReports}
-                addPoints={handleAddPoints}
                 setPoints={setPoints}
                 innerTab={mapTab}
                 setInnerTab={setMapTab}
@@ -342,9 +299,10 @@ export default function App() {
                 squads={squads}
                 setSquads={setSquads}
                 leaderboard={leaderboard}
-                setLeaderboard={setLeaderboard}
                 transformations={transformations}
-                addPoints={handleAddPoints}
+                setPoints={setPoints}
+                joinedSquadIds={currentUser.joinedSquads || []}
+                onJoinedSquadsChange={(ids) => setCurrentUser(u => (u ? { ...u, joinedSquads: ids } : u))}
                 innerTab={squadsTab}
                 setInnerTab={setSquadsTab}
               />
@@ -353,7 +311,7 @@ export default function App() {
             {view === 'rewards' && (
               <RewardsView 
                 points={points} 
-                spendPoints={handleSpendPoints} 
+                setPoints={setPoints}
               />
             )}
 
@@ -376,6 +334,8 @@ export default function App() {
 
       {/* High-Fidelity Floating AI Assistant Engine */}
       <AIAssistantWidget userDistrict={currentUser?.district} activeReports={reports} />
+
+      <Toaster />
 
     </div>
   );

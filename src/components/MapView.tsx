@@ -5,11 +5,13 @@ import L from 'leaflet';
 import { Report } from '../types';
 import { api } from '../lib/api';
 import CameraVerificationModal from './CameraVerificationModal';
+import { toast, errorMessage } from '../lib/toast';
+import { useReportActions } from '../hooks/useReportActions';
+import { POINTS } from '../shared/catalog';
 
 interface MapViewProps {
   reports: Report[];
   setReports: React.Dispatch<React.SetStateAction<Report[]>>;
-  addPoints: (amount: number) => void;
   // Sets the user's total to the value the server returned after it awarded points itself
   setPoints: (total: number) => void;
   innerTab: 'map' | 'feed' | 'analytics';
@@ -69,7 +71,6 @@ const NYC_CENTER: [number, number] = [40.7128, -74.0060];
 export default function MapView({
   reports,
   setReports,
-  addPoints,
   setPoints,
   innerTab,
   setInnerTab,
@@ -319,6 +320,9 @@ const [loadingMission, setLoadingMission] = useState(false);
       setReports([created, ...reports]);
       if (updatedPoints !== null) {
         setPoints(updatedPoints);
+        toast.success(`Report posted! +${POINTS.REPORT_CREATED} Hero Points`);
+      } else {
+        toast.success('Report posted!');
       }
 
       // Reset fields
@@ -326,78 +330,12 @@ const [loadingMission, setLoadingMission] = useState(false);
       setNewReportDescription('');
       setShowNewReportModal(false);
     } catch (err) {
-      console.error(err);
-      // Fallback locally
-      const newRep: Report = {
-        id: `rep-${Date.now()}`,
-        reporter: {
-          name: 'Sarah Johnson',
-          avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
-        },
-        timeAgo: 'Just now',
-        district: newReportDistrict,
-        urgency: newReportUrgency,
-        category: newReportCategory,
-        title: newReportTitle,
-        description: newReportDesc,
-        upvotes: 0,
-        comments: 0,
-        verified: false,
-        lat: selectedCoordinates?.lat,
-        lng: selectedCoordinates?.lng,
-        coordinates: selectedCoordinates ? undefined : { 
-          top: `${30 + Math.random() * 40}%`, 
-          left: `${20 + Math.random() * 60}%` 
-        },
-        icon: newReportCategory === 'Pothole' ? 'warning' : 'potted_plant'
-      };
-
-      setReports([newRep, ...reports]);
-      addPoints(20);
-      setNewReportTitle('');
-      setNewReportDescription('');
-      setShowNewReportModal(false);
+      // Keep the form open with the user's text so they can retry; never show a fake report
+      toast.error(errorMessage(err, 'Could not post your report. Please try again.'));
     }
   };
 
-  const toggleVerifyReport = async (id: string) => {
-    try {
-      const { report: updated, points: updatedPoints } = await api.verifyReport(id);
-      setReports(prev => prev.map(rep => rep.id === id ? updated : rep));
-      if (updatedPoints !== null) {
-        setPoints(updatedPoints);
-      }
-    } catch (err) {
-      console.error('Verify error:', err);
-      // fallback
-      setReports(prev => prev.map(rep => {
-        if (rep.id === id) {
-          const nextState = !rep.verified;
-          if (nextState) addPoints(15);
-          return { ...rep, verified: nextState };
-        }
-        return rep;
-      }));
-    }
-  };
-
-  const toggleUpvoteReport = async (id: string) => {
-    try {
-      const updated = await api.upvoteReport(id);
-      setReports(prev => prev.map(rep => rep.id === id ? updated : rep));
-      addPoints(5);
-    } catch (err) {
-      console.error('Upvote error:', err);
-      // fallback
-      setReports(prev => prev.map(rep => {
-        if (rep.id === id) {
-          return { ...rep, upvotes: rep.upvotes + 1 };
-        }
-        return rep;
-      }));
-      addPoints(5);
-    }
-  };
+  const { upvote: toggleUpvoteReport, verify: toggleVerifyReport } = useReportActions(setReports, setPoints);
 
   const filteredReports = reports.filter(r => {
     const matchesUrgency = urgencyFilter === 'All' || r.urgency === urgencyFilter;
@@ -633,7 +571,6 @@ const [loadingMission, setLoadingMission] = useState(false);
                               <button 
                                 onClick={() => {
                                   setSmartScanVerified(true);
-                                  addPoints(15);
                                 }}
                                 className="flex-1 bg-blue-600 text-white py-1.5 px-3 rounded-lg font-sans text-[10px] font-bold hover:bg-blue-700 hover:shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1 cursor-pointer focus:outline-none"
                               >
@@ -656,32 +593,41 @@ const [loadingMission, setLoadingMission] = useState(false);
                     {rep.id === 'rep-1' && smartScanVerified && (
                       <div className="bg-teal-50 border border-teal-100 rounded-xl p-2.5 text-center text-[10px] font-bold text-teal-600 flex items-center justify-center gap-1">
                         <span className="material-symbols-outlined text-xs">check_circle</span>
-                        Verified and merged with local report database! +15 Points
+                        Thanks! Marked as a likely duplicate.
                       </div>
                     )}
 
                     <div className="pt-2 border-t border-slate-50 flex justify-between items-center gap-2">
-                      <button
-                        onClick={() => toggleVerifyReport(rep.id)}
-                        className={`flex-1 py-2 px-3 rounded-xl font-sans text-xs font-bold transition-all focus:outline-none cursor-pointer text-center border ${
-                          rep.verified
-                            ? 'bg-teal-50 text-teal-600 border-teal-100'
-                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                        }`}
-                      >
-                        <span className="material-symbols-outlined text-xs align-middle mr-1">
-                          {rep.verified ? 'check_circle' : 'verified'}
-                        </span>
-                        {rep.verified ? 'Verified' : 'Verify'}
-                      </button>
+                      {rep.isMine ? (
+                        <p className="flex-1 text-center text-[11px] font-semibold text-slate-400 py-2">
+                          This is your report. Neighbors can verify and resolve it.
+                        </p>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => toggleVerifyReport(rep.id)}
+                            disabled={rep.hasVerified}
+                            className={`flex-1 py-2 px-3 rounded-xl font-sans text-xs font-bold transition-all focus:outline-none text-center border disabled:cursor-default ${
+                              rep.hasVerified
+                                ? 'bg-teal-50 text-teal-600 border-teal-100'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50 cursor-pointer'
+                            }`}
+                          >
+                            <span className="material-symbols-outlined text-xs align-middle mr-1">
+                              {rep.hasVerified ? 'check_circle' : 'verified'}
+                            </span>
+                            {rep.hasVerified ? 'You verified' : 'Verify'}
+                          </button>
 
-                      <button
-                        onClick={() => setResolvingReport(rep)}
-                        className="flex-1 py-2 px-3 bg-indigo-600 text-white rounded-xl font-sans text-xs font-bold hover:bg-indigo-700 hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer focus:outline-none shadow-sm"
-                      >
-                        <span className="material-symbols-outlined text-xs">photo_camera</span>
-                        Resolve
-                      </button>
+                          <button
+                            onClick={() => setResolvingReport(rep)}
+                            className="flex-1 py-2 px-3 bg-indigo-600 text-white rounded-xl font-sans text-xs font-bold hover:bg-indigo-700 hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-1 cursor-pointer focus:outline-none shadow-sm"
+                          >
+                            <span className="material-symbols-outlined text-xs">photo_camera</span>
+                            Resolve
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </motion.div>
@@ -810,7 +756,11 @@ const [loadingMission, setLoadingMission] = useState(false);
                     <div className="flex gap-4">
                       <button 
                         onClick={() => toggleUpvoteReport(rep.id)}
-                        className="flex items-center gap-1.5 text-slate-400 hover:text-blue-600 cursor-pointer text-xs font-bold focus:outline-none transition-colors"
+                        disabled={rep.isMine || rep.hasUpvoted}
+                        title={rep.isMine ? 'This is your report' : rep.hasUpvoted ? 'You upvoted this' : 'Upvote'}
+                        className={`flex items-center gap-1.5 text-xs font-bold focus:outline-none transition-colors disabled:cursor-default ${
+                          rep.hasUpvoted ? 'text-blue-600' : 'text-slate-400 hover:text-blue-600 cursor-pointer'
+                        }`}
                       >
                         <span className="material-symbols-outlined text-base">thumb_up</span>
                         <span>{rep.upvotes}</span>
@@ -823,16 +773,20 @@ const [loadingMission, setLoadingMission] = useState(false);
 
                     <button
                       onClick={() => toggleVerifyReport(rep.id)}
-                      className={`px-3 py-1.5 rounded-full font-sans text-[10px] font-bold transition-all focus:outline-none cursor-pointer border ${
-                        rep.verified
+                      disabled={rep.isMine || rep.hasVerified}
+                      title={rep.isMine ? "You can't verify your own report" : undefined}
+                      className={`px-3 py-1.5 rounded-full font-sans text-[10px] font-bold transition-all focus:outline-none border disabled:cursor-default ${
+                        rep.hasVerified || (rep.verified && rep.isMine)
                           ? 'bg-teal-50 text-teal-600 border-teal-100'
-                          : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                          : rep.isMine
+                            ? 'bg-slate-50 text-slate-400 border-slate-100'
+                            : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50 cursor-pointer'
                       }`}
                     >
                       <span className="material-symbols-outlined text-[11px] align-middle mr-1">
                         {rep.verified ? 'check_circle' : 'verified'}
                       </span>
-                      {rep.verified ? 'Verified' : 'Verify'}
+                      {rep.hasVerified ? 'You verified' : rep.verified ? 'Verified' : 'Verify'}
                     </button>
                   </div>
                 </motion.article>

@@ -28,13 +28,14 @@ describe('api client', () => {
 
   it('upvoteReport returns the updated report and sends the stored token', async () => {
     storage.setItem('community_hero_token', 'abc123');
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { id: 'rep-1', upvotes: 5 }));
+    const body = { report: { id: 'rep-1', upvotes: 5 }, points: 105 };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, body));
     vi.stubGlobal('fetch', fetchMock);
 
     const { api } = await import('../src/lib/api');
     const updated = await api.upvoteReport('rep-1');
 
-    expect(updated).toEqual({ id: 'rep-1', upvotes: 5 });
+    expect(updated).toEqual(body);
     const [url, options] = fetchMock.mock.calls[0];
     expect(url).toMatch(/\/api\/reports\/rep-1\/upvote$/);
     expect(options.headers.Authorization).toBe('Bearer abc123');
@@ -46,6 +47,31 @@ describe('api client', () => {
     const { api } = await import('../src/lib/api');
     await expect(api.register('Ana', 'ana@example.com', 'secret-123')).rejects.toThrow('User already exists');
     expect(storage.getItem('community_hero_token')).toBeNull();
+  });
+});
+
+describe('api client: errors and resolve', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('throws the server message for rejected actions', async () => {
+    vi.stubGlobal('localStorage', createStorage());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(409, { error: 'You already verified this report' })));
+
+    const { api } = await import('../src/lib/api');
+    await expect(api.verifyReport('rep-1')).rejects.toThrow('You already verified this report');
+  });
+
+  it('resolveReport returns the explanation instead of throwing when verification is refused', async () => {
+    vi.stubGlobal('localStorage', createStorage());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(503, { success: false, message: 'Photo verification is unavailable right now.' })));
+
+    const { api } = await import('../src/lib/api');
+    expect(await api.resolveReport('rep-1', 'data:image/jpeg;base64,AAAA')).toEqual({
+      success: false,
+      message: 'Photo verification is unavailable right now.',
+    });
   });
 });
 

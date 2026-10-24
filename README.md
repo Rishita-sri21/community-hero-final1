@@ -8,7 +8,7 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **AI triage:** Google Gemini suggests a category and urgency for each new report.
 - **Photo-verified resolution:** capture or upload a photo of the fix; Gemini Vision judges whether the issue is resolved.
 - **Civic assistant:** a chat widget that knows the app and the current reports in your area.
-- **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store.
+- **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
 - **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with audit logs.
 
 ## Architecture
@@ -49,6 +49,7 @@ On first start the server creates four demo accounts, all with the password `pas
 | `VITE_API_URL` | no | API base URL for the frontend; defaults to same-origin in dev and the deployed backend in production builds |
 | `PORT` | no | Server port, default `3000` |
 | `DATA_DIR` | no | Folder for `reports-db.json` and `audit-logs-db.json` |
+| `SIMULATE_AI_VERIFICATION` | no | Demo only: accept resolution photos without Gemini |
 
 ## Scripts
 
@@ -56,11 +57,27 @@ On first start the server creates four demo accounts, all with the password `pas
 |---|---|
 | `npm run dev` | Start the API + frontend with hot reload |
 | `npm run lint` | Type-check the whole project with `tsc` |
-| `npm test` | Run the API and client tests (no database needed) |
+| `npm test` | Run the tests. Set `TEST_MONGODB_URI=mongodb://127.0.0.1:27017` to include the points tests, which need MongoDB |
 | `npm run build` | Build the frontend to `dist/` and bundle the server to `dist/server.cjs` |
 | `npm start` | Start the server (set `NODE_ENV=production` to serve `dist/`) |
 
 CI runs type-check, tests and build on every pull request.
+
+## Points rules
+
+The browser never tells the server how many points to add. Each rule lives in `services/points.ts` and `app.ts`, with values in `src/shared/catalog.ts`:
+
+| Action | Points | Limit |
+|---|---|---|
+| Post a report | +20 | first 10 reports per day |
+| Upvote a report | +5 | once per report, not your own |
+| Verify a report | +15 | once per report, not your own |
+| Resolve a report with a verified photo | +150 | not your own report |
+| Log a green action | +10 to +25 | each action once per day |
+| Join a squad | +30 / +50 | first join only |
+| Redeem a reward | catalogue price | only with enough balance |
+
+Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAndUpdate`), so simultaneous requests can't overspend or double-award.
 
 ## API overview
 
@@ -68,11 +85,11 @@ CI runs type-check, tests and build on every pull request.
 |---|---|---|
 | `POST` | `/api/auth/register`, `/api/auth/login` | rate-limited |
 | `GET` | `/api/auth/me` | required |
-| `GET` | `/api/reports` | public |
-| `POST` | `/api/reports` | optional (awards points when signed in) |
-| `POST` | `/api/reports/:id/upvote`, `/api/reports/:id/verify` | optional |
-| `POST` | `/api/reports/resolve` | optional |
-| `POST` | `/api/users/add-points`, `/spend-points`, `/update-district`, `/join-squad` | required |
+| `GET` | `/api/reports` | public (adds `isMine`, `hasUpvoted`, `hasVerified` when signed in) |
+| `POST` | `/api/reports`, `/api/reports/:id/upvote`, `/api/reports/:id/verify`, `/api/reports/resolve` | required |
+| `POST` | `/api/actions/green`, `/api/rewards/redeem` | required |
+| `POST` | `/api/users/update-district`, `/join-squad`, `/leave-squad` | required |
+| `GET` | `/api/leaderboard` | public |
 | `POST` | `/api/assistant/chat` | public |
 | `GET/POST` | `/api/admin/*` | Civil Servant or Organizer |
 | `GET` | `/api/health` | public |
@@ -82,7 +99,6 @@ CI runs type-check, tests and build on every pull request.
 This project is being upgraded in stages. Current known gaps:
 
 - Reports and audit logs are stored in JSON files, so they don't survive redeploys on hosts with ephemeral disks.
-- `/api/users/add-points` trusts the amount sent by the client; points for some UI actions are still awarded client-side.
-- When Gemini is unavailable, photo verification falls back to a simulated success.
-- Squads, missions, notifications and analytics are front-end demos without server persistence.
-- Routes that need MongoDB are not covered by automated tests yet.
+- Green actions are self-reported, so they're limited to once per action per day rather than proven.
+- Missions, notifications and analytics are front-end demos without server persistence.
+- The map always opens on New York; neighborhoods don't have coordinates yet.
