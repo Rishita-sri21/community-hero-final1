@@ -2,11 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Report, Squad } from '../types';
 import CameraVerificationModal from './CameraVerificationModal';
+import { api } from '../lib/api';
+import { toast, errorMessage } from '../lib/toast';
+import { GREEN_ACTIONS } from '../shared/catalog';
+import { useReportActions } from '../hooks/useReportActions';
 
 interface HomeViewProps {
   userName: string;
   points: number;
-  addPoints: (amount: number) => void;
   setPoints: (total: number) => void;
   setView: (v: string) => void;
   reports: Report[];
@@ -17,7 +20,6 @@ interface HomeViewProps {
 export default function HomeView({
   userName,
   points,
-  addPoints,
   setPoints,
   setView,
   reports,
@@ -59,41 +61,21 @@ export default function HomeView({
     return () => clearInterval(timer);
   }, [points]);
 
-  const logActionsList = [
-    { title: 'Planted Native Seedling', points: 15, icon: 'nature' },
-    { title: 'Sorted Food Bank Donations', points: 25, icon: 'volunteer_activism' },
-    { title: 'Cleared Trail Debris', points: 20, icon: 'park' },
-    { title: 'Checked Streetlight Repair', points: 10, icon: 'lightbulb' }
-  ];
+  const { upvote: handleUpvote, verify: handleVerify } = useReportActions(setReports, setPoints);
 
-  const handleActionRedeem = (amount: number, title: string) => {
-    addPoints(amount);
-    setJustEarned(amount);
-    setShowActionOptions(false);
-    
-    setTimeout(() => {
-      setJustEarned(null);
-    }, 3000);
-  };
-
-  const handleVerify = (reportId: string) => {
-    setReports(prev => prev.map(rep => {
-      if (rep.id === reportId) {
-        return { ...rep, verified: true, upvotes: rep.upvotes + 1 };
-      }
-      return rep;
-    }));
-    addPoints(15);
-  };
-
-  const handleUpvote = (reportId: string) => {
-    setReports(prev => prev.map(rep => {
-      if (rep.id === reportId) {
-        return { ...rep, upvotes: rep.upvotes + 1 };
-      }
-      return rep;
-    }));
-    addPoints(5);
+  // The server checks the action exists and hasn't been logged today, then awards its points
+  const handleActionRedeem = async (actionId: string) => {
+    try {
+      const { points: total, awarded } = await api.logGreenAction(actionId);
+      setPoints(total);
+      setJustEarned(awarded);
+      setShowActionOptions(false);
+      setTimeout(() => {
+        setJustEarned(null);
+      }, 3000);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
   };
 
   // SVG circular properties
@@ -202,10 +184,10 @@ export default function HomeView({
               What positive impact did you make today?
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-              {logActionsList.map((act, idx) => (
+              {GREEN_ACTIONS.map((act) => (
                 <div 
-                  key={idx}
-                  onClick={() => handleActionRedeem(act.points, act.title)}
+                  key={act.id}
+                  onClick={() => handleActionRedeem(act.id)}
                   className="bg-slate-50 p-4 rounded-xl cursor-pointer hover:bg-blue-50/50 hover:shadow-sm hover:-translate-y-1 transition-all flex flex-col justify-between items-start h-32 border border-slate-100"
                 >
                   <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
@@ -366,7 +348,11 @@ export default function HomeView({
                 <div className="flex gap-4">
                   <button 
                     onClick={() => handleUpvote(rep.id)}
-                    className="flex items-center gap-1 text-xs text-slate-500 hover:text-blue-600 transition-colors cursor-pointer focus:outline-none"
+                    disabled={rep.isMine || rep.hasUpvoted}
+                    title={rep.isMine ? 'This is your report' : rep.hasUpvoted ? 'You upvoted this' : 'Upvote'}
+                    className={`flex items-center gap-1 text-xs transition-colors focus:outline-none disabled:cursor-default ${
+                      rep.hasUpvoted ? 'text-blue-600' : 'text-slate-500 hover:text-blue-600 cursor-pointer'
+                    }`}
                   >
                     <span className="material-symbols-outlined text-sm">thumb_up</span>
                     <span>{rep.upvotes}</span>
@@ -376,16 +362,20 @@ export default function HomeView({
                 <div className="flex gap-2">
                   <button 
                     onClick={() => handleVerify(rep.id)}
-                    disabled={rep.verified}
-                    className={`px-3 py-1.5 rounded-full text-[10px] font-bold flex items-center gap-1 transition-all cursor-pointer focus:outline-none ${
-                      rep.verified 
+                    disabled={rep.isMine || rep.hasVerified}
+                    title={rep.isMine ? 'You can\'t verify your own report' : undefined}
+                    className={`px-3 py-1.5 rounded-full text-[10px] font-bold flex items-center gap-1 transition-all focus:outline-none disabled:cursor-default ${
+                      rep.hasVerified 
                         ? 'bg-teal-50 text-teal-600 border border-teal-100' 
-                        : 'bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100'
+                        : rep.isMine
+                          ? 'bg-slate-50 text-slate-400 border border-slate-100'
+                          : 'bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 cursor-pointer'
                     }`}
                   >
                     <span className="material-symbols-outlined text-[12px]">verified</span>
-                    <span>{rep.verified ? 'Verified' : 'Verify Match'}</span>
+                    <span>{rep.hasVerified ? 'You verified' : rep.verified ? 'Verified · Confirm' : 'Verify Match'}</span>
                   </button>
+                  {!rep.isMine && (
                   <button 
                     onClick={() => setResolvingReport(rep)}
                     className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-[10px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1 cursor-pointer focus:outline-none"
@@ -393,6 +383,7 @@ export default function HomeView({
                     <span className="material-symbols-outlined text-[12px]">photo_camera</span>
                     <span>Resolve</span>
                   </button>
+                  )}
                 </div>
               </div>
             </div>

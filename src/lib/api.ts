@@ -2,39 +2,53 @@ import { Report } from '../types';
 import { API_URL } from '../config';
 
 export interface ChatMessage {
-role: 'user' | 'model';
-text: string;
+  role: 'user' | 'model';
+  text: string;
 }
 
 export interface ResolveResponse {
-success: boolean;
-message?: string;
-auditResult?: {
-success: boolean;
-confidenceScore: number;
-restorationDetails: string;
-co2OffsetKg: number;
-ecoIndexBoost: number;
-safetyScoreIncrease: number;
-};
-heroPointsAwarded?: number;
-userSession?: {
-points: number | null;
-};
+  success: boolean;
+  message?: string;
+  auditResult?: {
+    success: boolean;
+    confidenceScore: number;
+    restorationDetails: string;
+    co2OffsetKg: number;
+    ecoIndexBoost: number;
+    safetyScoreIncrease: number;
+  };
+  heroPointsAwarded?: number;
+  userSession?: {
+    points: number | null;
+  };
 }
 
 export interface AuthResponse {
-token: string;
-user: {
-id: string;
-name: string;
-email: string;
-points: number;
-avatar: string;
-joinedSquads: string[];
-role?: 'Volunteer' | 'Civil Servant' | 'Organizer';
-district?: string;
-};
+  token: string;
+  user: {
+    _id: string;
+    name: string;
+    email: string;
+    points: number;
+    avatar: string;
+    joinedSquads: string[];
+    role?: 'Volunteer' | 'Civil Servant' | 'Organizer';
+    district?: string;
+  };
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  name: string;
+  avatar?: string;
+  points: number;
+  userId: string;
+}
+
+// Response of any action that changed a report and may have awarded points
+export interface ReportActionResponse {
+  report: Report;
+  points: number | null;
 }
 
 const TOKEN_KEY = 'community_hero_token';
@@ -42,346 +56,143 @@ const TOKEN_KEY = 'community_hero_token';
 const getStoredToken = () => localStorage.getItem(TOKEN_KEY);
 
 const makeHeaders = (additional: Record<string, string> = {}) => {
-const headers: Record<string, string> = {
-'Content-Type': 'application/json',
-...additional,
-};
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...additional,
+  };
 
-const token = getStoredToken();
+  const token = getStoredToken();
 
-if (token) {
-headers.Authorization = `Bearer ${token}`;
-}
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
-return headers;
+  return headers;
 };
 
 const apiFetch = (endpoint: string, options?: RequestInit) => {
-return fetch(`${API_URL}${endpoint}`, options);
+  return fetch(`${API_URL}${endpoint}`, options);
 };
 
+// Sends a request and returns the parsed JSON. On an error status it throws an Error
+// carrying the server's message (e.g. "You already verified this report"), so the UI can show it.
+async function request<T>(endpoint: string, options: RequestInit = {}, fallbackError = 'Request failed'): Promise<T> {
+  const res = await apiFetch(endpoint, { ...options, headers: makeHeaders() });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || body.message || fallbackError);
+  }
+
+  return res.json();
+}
+
+const post = <T>(endpoint: string, body: unknown, fallbackError: string) =>
+  request<T>(endpoint, { method: 'POST', body: JSON.stringify(body) }, fallbackError);
+
 export const api = {
-async generateMission(userDistrict: string, reports: any[]) {
-const res = await apiFetch('/api/ai/mission', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({ userDistrict, reports }),
-});
-
-if (!res.ok) {
-  throw new Error('Mission generation failed');
-}
-
-return res.json();
-
-},
-
-async register(
-  name: string,
-  email: string,
-  password: string,
-  avatar?: string,
-  role?: string
-): Promise<AuthResponse> {
-  const res = await apiFetch("/api/auth/register", {
-    method: "POST",
-    headers: makeHeaders(),
-    body: JSON.stringify({
-      name,
-      email,
-      password,
-      avatar,
-      role,
-    }),
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({
-      error: 'Registration failed',
-    }));
-    throw new Error(err.error || 'Registration failed');
-  }
-
-  const data: AuthResponse = await res.json();
-  localStorage.setItem(TOKEN_KEY, data.token);
-
-  return data;
-},
-
-async login(
-email: string,
-password: string
-): Promise<AuthResponse> {
-const res = await apiFetch('/api/auth/login', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({ email, password }),
-});
-
-
-if (!res.ok) {
-  const err = await res.json().catch(() => ({
-    error: 'Login failed',
-  }));
-  throw new Error(err.error || 'Login failed');
-}
-
-const data: AuthResponse = await res.json();
-localStorage.setItem(TOKEN_KEY, data.token);
-
-return data;
-
-
-},
-
-async getMe() {
-const res = await apiFetch('/api/auth/me', {
-method: 'GET',
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  localStorage.removeItem(TOKEN_KEY);
-  throw new Error('Session expired');
-}
-
-return res.json();
-
-},
-
-logout() {
-localStorage.removeItem(TOKEN_KEY);
-},
-
-async getLeaderboard() {
-const res = await apiFetch('/api/leaderboard');
-
-if (!res.ok) {
-  throw new Error('Failed to fetch leaderboard');
-}
-
-return res.json();
-
-},
-
-async getReports(): Promise<Report[]> {
-const res = await apiFetch('/api/reports');
-
-
-if (!res.ok) {
-  throw new Error('Failed to fetch reports');
-}
-
-return res.json();
-
-
-},
-
-async createReport(report: Partial<Report>): Promise<{ report: Report; points: number | null }> {
-const res = await apiFetch('/api/reports', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify(report),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to create report');
-}
-
-const data = await res.json();
-// Older backends returned the bare report; accept both so the frontend and
-// backend can be deployed independently.
-return data.report ? data : { report: data, points: null };
-
-
-},
-
-async upvoteReport(id: string) {
-const res = await apiFetch(`/api/reports/${id}/upvote`, {
-method: 'POST',
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to upvote report');
-}
-
-return res.json();
-
-
-},
-
-async verifyReport(id: string): Promise<{ report: Report; points: number | null }> {
-const res = await apiFetch(`/api/reports/${id}/verify`, {
-method: 'POST',
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to verify report');
-}
-
-return res.json();
-
-
-},
-
-async resolveReport(reportId: string, imageBase64: string): Promise<ResolveResponse> {
-const res = await apiFetch('/api/reports/resolve', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({
-reportId,
-image: imageBase64,
-}),
-});
-
-if (!res.ok) {
-  throw new Error('Failed to resolve report');
-}
-
-return res.json();
-
-
-},
-
-async joinSquad(squadId: string) {
-const res = await apiFetch('/api/users/join-squad', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({ squadId }),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to join squad');
-}
-
-return res.json();
-
-
-},
-
-async addPoints(amount: number) {
-const res = await apiFetch('/api/users/add-points', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({ amount }),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to add points');
-}
-
-return res.json();
-
-
-},
-
-async spendPoints(amount: number) {
-const res = await apiFetch('/api/users/spend-points', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({ amount }),
-});
-
-if (!res.ok) {
-  throw new Error('Failed to spend points');
-}
-
-return res.json();
-
-
-},
-
-async updateDistrict(district: string) {
-  const res = await apiFetch("/api/users/update-district", {
-    method: "POST",
-    headers: makeHeaders(),
-    body: JSON.stringify({ district }),
-  });
-
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(text);
-  }
-
-  return JSON.parse(text);
-},
-
-async chatWithAssistant(
-messages: ChatMessage[],
-userDistrict?: string,
-activeReports?: any[]
-) {
-const res = await apiFetch('/api/assistant/chat', {
-method: 'POST',
-headers: makeHeaders(),
-body: JSON.stringify({
-messages,
-userDistrict,
-activeReports,
-}),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to chat with assistant');
-}
-
-return res.json();
-
-
-},
-
-async getAuditLogs() {
-const res = await apiFetch('/api/admin/audit-logs', {
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to retrieve audit logs');
-}
-
-return res.json();
-
-
-},
-
-async getDbStatus() {
-const res = await apiFetch('/api/admin/db/status', {
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to retrieve database status');
-}
-
-return res.json();
-
-
-},
-
-async triggerDbBackup() {
-const res = await apiFetch('/api/admin/db/backup', {
-method: 'POST',
-headers: makeHeaders(),
-});
-
-
-if (!res.ok) {
-  throw new Error('Failed to trigger database backup');
-}
-
-return res.json();
-
-
-},
+  async register(
+    name: string,
+    email: string,
+    password: string,
+    avatar?: string,
+    role?: string
+  ): Promise<AuthResponse> {
+    const data = await post<AuthResponse>('/api/auth/register', { name, email, password, avatar, role }, 'Registration failed');
+    localStorage.setItem(TOKEN_KEY, data.token);
+    return data;
+  },
+
+  async login(email: string, password: string): Promise<AuthResponse> {
+    const data = await post<AuthResponse>('/api/auth/login', { email, password }, 'Login failed');
+    localStorage.setItem(TOKEN_KEY, data.token);
+    return data;
+  },
+
+  async getMe() {
+    try {
+      return await request<any>('/api/auth/me', {}, 'Session expired');
+    } catch (err) {
+      localStorage.removeItem(TOKEN_KEY);
+      throw err;
+    }
+  },
+
+  logout() {
+    localStorage.removeItem(TOKEN_KEY);
+  },
+
+  getLeaderboard() {
+    return request<LeaderboardEntry[]>('/api/leaderboard', {}, 'Failed to fetch leaderboard');
+  },
+
+  getReports() {
+    return request<Report[]>('/api/reports', {}, 'Failed to fetch reports');
+  },
+
+  async createReport(report: Partial<Report>): Promise<ReportActionResponse> {
+    const data = await post<any>('/api/reports', report, 'Failed to create report');
+    // Older backends returned the bare report; accept both so the frontend and
+    // backend can be deployed independently.
+    return data.report ? data : { report: data, points: null };
+  },
+
+  upvoteReport(id: string) {
+    return post<ReportActionResponse>(`/api/reports/${id}/upvote`, {}, 'Failed to upvote report');
+  },
+
+  verifyReport(id: string) {
+    return post<ReportActionResponse>(`/api/reports/${id}/verify`, {}, 'Failed to verify report');
+  },
+
+  // Unlike the others, this returns the server's answer even for error statuses,
+  // because the body explains why verification failed and the modal shows it.
+  async resolveReport(reportId: string, imageBase64: string): Promise<ResolveResponse> {
+    const res = await apiFetch('/api/reports/resolve', {
+      method: 'POST',
+      headers: makeHeaders(),
+      body: JSON.stringify({ reportId, image: imageBase64 }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return { success: false, message: body.message || body.error || 'Failed to resolve report' };
+    }
+    return body;
+  },
+
+  logGreenAction(actionId: string) {
+    return post<{ points: number; awarded: number }>('/api/actions/green', { actionId }, 'Failed to log action');
+  },
+
+  redeemReward(rewardId: string) {
+    return post<{ points: number; code: string }>('/api/rewards/redeem', { rewardId }, 'Failed to redeem reward');
+  },
+
+  joinSquad(squadId: string) {
+    return post<{ joinedSquads: string[]; points: number; awarded: number }>('/api/users/join-squad', { squadId }, 'Failed to join squad');
+  },
+
+  leaveSquad(squadId: string) {
+    return post<{ joinedSquads: string[] }>('/api/users/leave-squad', { squadId }, 'Failed to leave squad');
+  },
+
+  updateDistrict(district: string) {
+    return post<{ success: boolean; user: any }>('/api/users/update-district', { district }, 'Failed to update district');
+  },
+
+  chatWithAssistant(messages: ChatMessage[], userDistrict?: string, activeReports?: any[]) {
+    return post<{ text: string }>('/api/assistant/chat', { messages, userDistrict, activeReports }, 'Failed to chat with assistant');
+  },
+
+  getAuditLogs() {
+    return request<any[]>('/api/admin/audit-logs', {}, 'Failed to retrieve audit logs');
+  },
+
+  getDbStatus() {
+    return request<any>('/api/admin/db/status', {}, 'Failed to retrieve database status');
+  },
+
+  triggerDbBackup() {
+    return post<any>('/api/admin/db/backup', {}, 'Failed to trigger database backup');
+  },
 };

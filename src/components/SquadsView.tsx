@@ -1,14 +1,18 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Squad, Citizen, Transformation } from '../types';
+import { api } from '../lib/api';
+import { toast, errorMessage } from '../lib/toast';
 
 interface SquadsViewProps {
   squads: Squad[];
   setSquads: React.Dispatch<React.SetStateAction<Squad[]>>;
   leaderboard: Citizen[];
-  setLeaderboard: React.Dispatch<React.SetStateAction<Citizen[]>>;
   transformations: Transformation[];
-  addPoints: (amount: number) => void;
+  setPoints: (total: number) => void;
+  // Squads the user has joined, as stored on the server
+  joinedSquadIds: string[];
+  onJoinedSquadsChange: (ids: string[]) => void;
   innerTab: 'squads' | 'stories';
   setInnerTab: (t: 'squads' | 'stories') => void;
 }
@@ -17,16 +21,18 @@ export default function SquadsView({
   squads,
   setSquads,
   leaderboard,
-  setLeaderboard,
   transformations,
-  addPoints,
+  setPoints,
+  joinedSquadIds,
+  onJoinedSquadsChange,
   innerTab,
   setInnerTab
 }: SquadsViewProps) {
   
   // Squad interactive joining state
-  const [activeSquadJoined, setActiveSquadJoined] = useState(false);
-  const [joinedSquadIds, setJoinedSquadIds] = useState<string[]>([]);
+  const FEATURED_SQUAD_ID = 'sq-featured';
+  const activeSquadJoined = joinedSquadIds.includes(FEATURED_SQUAD_ID);
+  const [pendingSquadId, setPendingSquadId] = useState<string | null>(null);
   
   // High-five tracking counts
   const [highFives, setHighFives] = useState<Record<string, number>>({
@@ -41,45 +47,40 @@ export default function SquadsView({
     'trf-2': 'after'
   });
 
-  const handleActiveSquadToggle = () => {
-    setActiveSquadJoined(!activeSquadJoined);
-    if (!activeSquadJoined) {
-      addPoints(50);
-    } else {
-      addPoints(-50);
+  // Join or leave a squad on the server. The join bonus is paid only the first time;
+  // leaving never costs points, and re-joining never pays again.
+  const toggleSquad = async (id: string) => {
+    if (pendingSquadId) return;
+    setPendingSquadId(id);
+    const isJoined = joinedSquadIds.includes(id);
+    try {
+      if (isJoined) {
+        const { joinedSquads } = await api.leaveSquad(id);
+        onJoinedSquadsChange(joinedSquads);
+      } else {
+        const { joinedSquads, points, awarded } = await api.joinSquad(id);
+        onJoinedSquadsChange(joinedSquads);
+        setPoints(points);
+        toast.success(awarded > 0 ? `Welcome to the squad! +${awarded} Hero Points` : 'Welcome back to the squad!');
+      }
+      setSquads(prev => prev.map(sq => (
+        sq.id === id ? { ...sq, volunteersCount: sq.volunteersCount + (isJoined ? -1 : 1) } : sq
+      )));
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setPendingSquadId(null);
     }
   };
 
-  const handleJoinSquad = (id: string) => {
-    if (joinedSquadIds.includes(id)) {
-      // Leave
-      setJoinedSquadIds(joinedSquadIds.filter(sid => sid !== id));
-      setSquads(prev => prev.map(sq => {
-        if (sq.id === id) {
-          return { ...sq, volunteersCount: sq.volunteersCount - 1 };
-        }
-        return sq;
-      }));
-      addPoints(-30);
-    } else {
-      // Join
-      setJoinedSquadIds([...joinedSquadIds, id]);
-      setSquads(prev => prev.map(sq => {
-        if (sq.id === id) {
-          return { ...sq, volunteersCount: sq.volunteersCount + 1 };
-        }
-        return sq;
-      }));
-      addPoints(30);
-    }
-  };
+  const handleActiveSquadToggle = () => toggleSquad(FEATURED_SQUAD_ID);
+  const handleJoinSquad = (id: string) => toggleSquad(id);
 
   const sendHighFive = (name: string) => {
     setHighFives(prev => ({
       ...prev,
       [name]: prev[name] + 1
     }));
-    addPoints(5);
   };
 
   return (

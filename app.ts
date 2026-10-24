@@ -11,6 +11,8 @@ import jwt from 'jsonwebtoken';
 import { generateToken } from './utils/jwt';
 import cors from 'cors';
 import { protect } from './middleware/auth';
+import { awardPoints, joinSquad, leaveSquad, logGreenAction, redeemReward } from './services/points';
+import { POINTS, MAX_REWARDED_REPORTS_PER_DAY } from './src/shared/catalog';
 
 // Load environment variables
 dotenv.config();
@@ -379,31 +381,40 @@ app.get('/api/leaderboard', async (req, res) => {
   }
 });
 
-// Modify User Points Balance
-app.post('/api/users/add-points', protect, async (req: any, res) => {
+// Points can only change through these routes, and only by amounts the server decides.
+// There is deliberately no "add N points" endpoint.
+
+// Log a self-reported green action (each action once per day)
+app.post('/api/actions/green', protect, async (req: any, res) => {
   try {
-    const { amount } = req.body;
-    req.user.points += Number(amount) || 0;
-    await req.user.save();
-    res.json({ success: true, points: req.user.points });
+    const result = await logGreenAction(req.user._id, String(req.body.actionId || ''));
+    if ('reason' in result) {
+      return result.reason === 'unknown-action'
+        ? res.status(400).json({ error: 'Unknown action' })
+        : res.status(429).json({ error: 'You already logged this action today. Come back tomorrow!' });
+    }
+    logAuditEvent('POINTS_TRANSACTION', `Green action ${req.body.actionId} logged by ${req.user.email} (+${result.awarded})`, true, req.user.email, req.ip);
+    res.json({ points: result.points, awarded: result.awarded });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to add points' });
+    res.status(500).json({ error: 'Failed to log action' });
   }
 });
 
-app.post('/api/users/spend-points', protect, async (req: any, res) => {
+// Redeem a reward from the catalogue; the server decides the cost
+app.post('/api/rewards/redeem', protect, async (req: any, res) => {
   try {
-    const { amount } = req.body;
-    if (req.user.points < amount) {
-      return res.status(400).json({ error: 'Insufficient balance' });
+    const result = await redeemReward(req.user._id, String(req.body.rewardId || ''));
+    if ('reason' in result) {
+      return result.reason === 'unknown-reward'
+        ? res.status(400).json({ error: 'Unknown reward' })
+        : res.status(400).json({ error: 'You need more Hero Points to redeem this reward.' });
     }
-    req.user.points -= Number(amount) || 0;
-    await req.user.save();
-    res.json({ success: true, points: req.user.points });
+    logAuditEvent('POINTS_TRANSACTION', `Reward ${req.body.rewardId} redeemed by ${req.user.email}`, true, req.user.email, req.ip);
+    res.json({ points: result.points, code: result.code });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to spend points' });
+    res.status(500).json({ error: 'Failed to redeem reward' });
   }
 });
 
@@ -426,19 +437,27 @@ app.post('/api/users/update-district', protect, async (req: any, res) => {
   }
 });
 
-// Track Joined Squads
+// Join a squad (join bonus paid only the first time)
 app.post('/api/users/join-squad', protect, async (req: any, res) => {
   try {
-    const { squadId } = req.body;
-    if (!req.user.joinedSquads) req.user.joinedSquads = [];
-    if (!req.user.joinedSquads.includes(squadId)) {
-      req.user.joinedSquads.push(squadId);
-      await req.user.save();
+    const result = await joinSquad(req.user._id, String(req.body.squadId || ''));
+    if ('reason' in result) {
+      return res.status(400).json({ error: 'Unknown squad' });
     }
-    res.json({ success: true, joinedSquads: req.user.joinedSquads });
+    res.json({ joinedSquads: result.joinedSquads, points: result.points, awarded: result.awarded });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to join squad' });
+  }
+});
+
+app.post('/api/users/leave-squad', protect, async (req: any, res) => {
+  try {
+    const joinedSquads = await leaveSquad(req.user._id, String(req.body.squadId || ''));
+    res.json({ joinedSquads });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to leave squad' });
   }
 });
 
@@ -447,14 +466,50 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+// Reports as stored on disk. Fields used for permission checks never leave the server.
+type StoredReport = Report & {
+  reporter: Report['reporter'] & { id?: string; email?: string };
+  createdAt?: string;
+  upvotedBy?: string[];
+  verifiedBy?: string[];
+};
+
+const CATEGORIES = ['Pothole', 'Graffiti', 'Streetlight', 'Park Maintenance', 'Waste Management', 'Water Leakage'];
+const URGENCIES = ['High', 'Medium', 'Low'];
+
+function isOwnReport(report: StoredReport, user: any) {
+  if (report.reporter.id) return report.reporter.id === String(user._id);
+  return !!report.reporter.email && report.reporter.email === user.email;
+}
+
+// Strips private fields (reporter email, who voted) and adds flags for the current viewer
+function toPublicReport(report: StoredReport, user?: any): Report {
+  const { upvotedBy = [], verifiedBy = [], reporter, ...rest } = report;
+  const { email, id, ...publicReporter } = reporter;
+  const userId = user ? String(user._id) : null;
+  return {
+    ...rest,
+    reporter: publicReporter,
+    isMine: user ? isOwnReport(report, user) : false,
+    hasUpvoted: userId ? upvotedBy.includes(userId) : false,
+    hasVerified: userId ? verifiedBy.includes(userId) : false,
+  };
+}
+
+function startOfTodayIso() {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
 // Get all reports from persistent storage
-app.get('/api/reports', (req, res) => {
-  const reps = loadReports();
-  res.json(reps);
+app.get('/api/reports', (req: any, res) => {
+  const reps = loadReports() as StoredReport[];
+  res.json(reps.map((r) => toPublicReport(r, req.user)));
 });
 
 // Create a new report
-app.post('/api/reports', async (req: any, res) => {
+app.post('/api/reports', protect, async (req: any, res) => {
   const reportData = req.body;
 
   if (typeof reportData.title !== 'string' || !reportData.title.trim() ||
@@ -464,7 +519,8 @@ app.post('/api/reports', async (req: any, res) => {
 
   const ai = getGenAI();
 
-  let autoCategory = reportData.category || 'General';
+  let autoCategory = CATEGORIES.includes(reportData.category) ? reportData.category : 'General';
+  let urgency = URGENCIES.includes(reportData.urgency) ? reportData.urgency : 'Medium';
 
   // AI-powered categorization and details enrichment
   if (ai) {
@@ -493,34 +549,36 @@ app.post('/api/reports', async (req: any, res) => {
         },
       });
 
+      // The model's answer is untrusted input too: only accept values from the allowed lists
       const parsed = JSON.parse(aiRes.text || '{}');
-      if (parsed.category) autoCategory = parsed.category;
-      if (parsed.urgency) reportData.urgency = parsed.urgency;
+      if (CATEGORIES.includes(parsed.category)) autoCategory = parsed.category;
+      if (URGENCIES.includes(parsed.urgency)) urgency = parsed.urgency;
     } catch (err) {
       console.warn('AI categorization failed, using default values:', err);
     }
   }
 
-  const reporterName = req.user ? req.user.name : 'Sarah Johnson';
-  const reporterAvatar = req.user ? req.user.avatar : 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150';
-  const reporterEmail = req.user ? req.user.email : 'sarah@example.com';
-
-  const newReport: Report = {
+  const userId = String(req.user._id);
+  const newReport: StoredReport = {
     id: `rep-${Date.now()}`,
     reporter: {
-      name: reporterName,
-      avatar: reporterAvatar,
-      email: reporterEmail,
+      id: userId,
+      name: req.user.name,
+      avatar: req.user.avatar,
+      email: req.user.email,
     },
+    createdAt: new Date().toISOString(),
     timeAgo: 'Just now',
     district: reportData.district || 'Downtown',
-    urgency: reportData.urgency || 'Medium',
+    urgency,
     category: autoCategory,
     title: reportData.title,
     description: reportData.description,
     upvotes: 0,
     comments: 0,
     verified: false,
+    upvotedBy: [],
+    verifiedBy: [],
     lat: isValidCoordinate(reportData.lat, 90) ? reportData.lat : undefined,
     lng: isValidCoordinate(reportData.lng, 180) ? reportData.lng : undefined,
     coordinates: reportData.coordinates || {
@@ -532,64 +590,66 @@ app.post('/api/reports', async (req: any, res) => {
     locationDetails: reportData.locationDetails || `${reportData.district} Area`,
   };
 
-  const reps = loadReports();
-  const updatedReps = [newReport, ...reps];
-  saveReports(updatedReps);
+  // Load and save back to back (no await in between) so concurrent requests can't drop each other's writes
+  const reps = loadReports() as StoredReport[];
+  const today = startOfTodayIso();
+  const reportsToday = reps.filter((r) => r.reporter.id === userId && r.createdAt && r.createdAt >= today).length;
+  saveReports([newReport, ...reps]);
 
-  // If user is authenticated, award report points (+20).
-  // The server is the only place points are awarded for reports; the client just displays the new total.
-  let updatedPoints = null;
-  if (req.user) {
-    try {
-      req.user.points += 20;
-      await req.user.save();
-      updatedPoints = req.user.points;
-    } catch (err) {
-      console.error('Failed to award report points:', err);
-    }
+  // Points are capped per day so mass-posting reports can't farm them
+  let updatedPoints: number | null = null;
+  if (reportsToday < MAX_REWARDED_REPORTS_PER_DAY) {
+    updatedPoints = await awardPoints(req.user._id, POINTS.REPORT_CREATED);
   }
 
-  res.status(201).json({ report: newReport, points: updatedPoints });
+  res.status(201).json({ report: toPublicReport(newReport, req.user), points: updatedPoints });
 });
 
-// Upvote Report API
-app.post('/api/reports/:id/upvote', (req, res) => {
-  const { id } = req.params;
-  const reps = loadReports();
-  const index = reps.findIndex((r) => r.id === id);
-  if (index !== -1) {
-    reps[index].upvotes += 1;
-    saveReports(reps);
-    return res.json(reps[index]);
+// Upvote Report API: once per user, not on your own report
+app.post('/api/reports/:id/upvote', protect, async (req: any, res) => {
+  const userId = String(req.user._id);
+  const reps = loadReports() as StoredReport[];
+  const report = reps.find((r) => r.id === req.params.id);
+  if (!report) {
+    return res.status(404).json({ error: 'Report not found' });
   }
-  res.status(404).json({ error: 'Report not found' });
+  if (isOwnReport(report, req.user)) {
+    return res.status(403).json({ error: "You can't upvote your own report" });
+  }
+  if (report.upvotedBy?.includes(userId)) {
+    return res.status(409).json({ error: 'You already upvoted this report' });
+  }
+
+  report.upvotes += 1;
+  report.upvotedBy = [...(report.upvotedBy || []), userId];
+  saveReports(reps);
+
+  const points = await awardPoints(req.user._id, POINTS.REPORT_UPVOTED);
+  res.json({ report: toPublicReport(report, req.user), points });
 });
 
-// Verify Report API
-app.post('/api/reports/:id/verify', async (req: any, res) => {
-  const { id } = req.params;
-  const reps = loadReports();
-  const index = reps.findIndex((r) => r.id === id);
-  if (index !== -1) {
-    const nextVerified = !reps[index].verified;
-    reps[index].verified = nextVerified;
-    saveReports(reps);
-
-    // If verified by a logged-in user, award +15 points!
-    let updatedPoints = null;
-    if (req.user && nextVerified) {
-      try {
-        req.user.points += 15;
-        await req.user.save();
-        updatedPoints = req.user.points;
-      } catch (err) {
-        console.error('Failed to award verification points:', err);
-      }
-    }
-
-    return res.json({ report: reps[index], points: updatedPoints });
+// Verify Report API: once per user, not on your own report. A report is verified once anyone verifies it.
+app.post('/api/reports/:id/verify', protect, async (req: any, res) => {
+  const userId = String(req.user._id);
+  const reps = loadReports() as StoredReport[];
+  const report = reps.find((r) => r.id === req.params.id);
+  if (!report) {
+    return res.status(404).json({ error: 'Report not found' });
   }
-  res.status(404).json({ error: 'Report not found' });
+  if (isOwnReport(report, req.user)) {
+    return res.status(403).json({ error: "You can't verify your own report" });
+  }
+  if (report.verifiedBy?.includes(userId)) {
+    return res.status(409).json({ error: 'You already verified this report' });
+  }
+
+  report.verifiedBy = [...(report.verifiedBy || []), userId];
+  report.verified = true;
+  saveReports(reps);
+
+  logAuditEvent('REPORT_VERIFIED', `Report ${report.id} verified by ${req.user.email}`, true, req.user.email, req.ip);
+  const points = await awardPoints(req.user._id, POINTS.REPORT_VERIFIED);
+  res.json({ report: toPublicReport(report, req.user), points });
 });
 
 // AI Assistant Chat endpoint
@@ -840,36 +900,64 @@ ${JSON.stringify(reports)}
 });
 
 // Resolve reported issue via AI Multi-Modal Vision Audit
-app.post('/api/reports/resolve', async (req: any, res) => {
+app.post('/api/reports/resolve', protect, async (req: any, res) => {
   const { reportId, image } = req.body;
   const ai = getGenAI();
 
-  if (!reportId || !image) {
+  if (!reportId || typeof image !== 'string' || !image) {
     return res.status(400).json({ error: 'Missing reportId or image' });
   }
 
   // Find the target report
-  const reps = loadReports();
-  const report = reps.find((r) => r.id === reportId);
-  const title = report ? report.title : 'Community hazard';
-  const desc = report ? report.description : 'A reported community issue';
+  const report = (loadReports() as StoredReport[]).find((r) => r.id === reportId);
+  if (!report) {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+  if (isOwnReport(report, req.user)) {
+    return res.status(403).json({ error: "You can't resolve your own report" });
+  }
+  const title = report.title;
+  const desc = report.description;
 
-  // Returns the user's new total, or null for anonymous requests (so the client never mistakes 150 for a total)
-  const awardPoints = async (): Promise<number | null> => {
-    let finalPoints: number | null = null;
-    if (req.user) {
-      try {
-        req.user.points += 150;
-        await req.user.save();
-        finalPoints = req.user.points;
-      } catch (err) {
-        console.error('Failed to award resolution points:', err);
-      }
+  // Removes the report and pays out. Reports are re-read here because the AI call above
+  // takes seconds, and reports created meanwhile must not be overwritten.
+  const completeResolution = async () => {
+    const latest = loadReports();
+    if (!latest.some((r) => r.id === reportId)) {
+      return null; // someone else resolved it while we were waiting
     }
-    return finalPoints;
+    saveReports(latest.filter((r) => r.id !== reportId));
+    logAuditEvent('REPORT_RESOLVED', `Report ${reportId} resolved by ${req.user.email}`, true, req.user.email, req.ip);
+    return awardPoints(req.user._id, POINTS.REPORT_RESOLVED);
   };
 
-  if (ai) {
+  // Demo mode only: without a Gemini key the photo can't be checked, so by default we refuse
+  // rather than pretend. SIMULATE_AI_VERIFICATION=true restores the old always-succeeds behavior.
+  if (!ai) {
+    if (process.env.SIMULATE_AI_VERIFICATION !== 'true') {
+      return res.status(503).json({ success: false, message: 'Photo verification is unavailable right now. Please try again later.' });
+    }
+    const finalPoints = await completeResolution();
+    if (finalPoints === null) {
+      return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
+    }
+    return res.json({
+      success: true,
+      message: 'Resolution accepted (simulated verification, demo mode).',
+      auditResult: {
+        success: true,
+        confidenceScore: 94,
+        restorationDetails: `Simulated verification of: "${title}".`,
+        co2OffsetKg: Math.floor(10 + Math.random() * 25),
+        ecoIndexBoost: Math.floor(4 + Math.random() * 6),
+        safetyScoreIncrease: Math.floor(8 + Math.random() * 7),
+      },
+      heroPointsAwarded: POINTS.REPORT_RESOLVED,
+      userSession: { points: finalPoints },
+    });
+  }
+
+  {
     try {
       const mimeType = getMimeType(image);
       const base64Data = getBase64Data(image);
@@ -912,17 +1000,16 @@ app.post('/api/reports/resolve', async (req: any, res) => {
       const auditResult = JSON.parse(aiRes.text || '{}');
 
       if (auditResult.success) {
-        // Remove from active reports list (since it's now resolved)
-        const updatedReps = reps.filter((r) => r.id !== reportId);
-        saveReports(updatedReps);
-
-        const finalPoints = await awardPoints();
+        const finalPoints = await completeResolution();
+        if (finalPoints === null) {
+          return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
+        }
 
         return res.json({
           success: true,
           message: 'Resolution verified successfully!',
           auditResult,
-          heroPointsAwarded: 150,
+          heroPointsAwarded: POINTS.REPORT_RESOLVED,
           userSession: { points: finalPoints },
         });
       } else {
@@ -933,34 +1020,9 @@ app.post('/api/reports/resolve', async (req: any, res) => {
       }
     } catch (err) {
       console.error('Vision API error:', err);
+      return res.status(502).json({ success: false, message: 'Photo verification failed. Please try again.' });
     }
   }
-
-  // Simulated Vision Audit Fallback
-  setTimeout(async () => {
-    const auditResult = {
-      success: true,
-      confidenceScore: 94,
-      restorationDetails: `Successfully verified the restoration of: "${title}". High-quality aggregate/asphalt application matches municipal infrastructure safety standards perfectly.`,
-      co2OffsetKg: Math.floor(10 + Math.random() * 25),
-      ecoIndexBoost: Math.floor(4 + Math.random() * 6),
-      safetyScoreIncrease: Math.floor(8 + Math.random() * 7),
-    };
-
-    // Remove from active list
-    const updatedReps = reps.filter((r) => r.id !== reportId);
-    saveReports(updatedReps);
-
-    const finalPoints = await awardPoints();
-
-    res.json({
-      success: true,
-      message: 'Resolution verified successfully via Civic AI vision simulation!',
-      auditResult,
-      heroPointsAwarded: 150,
-      userSession: { points: finalPoints },
-    });
-  }, 1800);
 });
 
 // ==========================================

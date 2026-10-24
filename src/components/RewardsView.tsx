@@ -1,78 +1,35 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-
-interface RewardItem {
-  id: string;
-  title: string;
-  description: string;
-  cost: number;
-  image: string;
-  category: 'Green' | 'Transit' | 'Local Biz' | 'Honor';
-  icon: string;
-}
+import { api } from '../lib/api';
+import { toast, errorMessage } from '../lib/toast';
+import { REWARDS, RewardItem } from '../shared/catalog';
 
 interface RewardsViewProps {
   points: number;
-  spendPoints: (amount: number) => boolean | Promise<boolean>;
+  setPoints: (total: number) => void;
 }
 
-export default function RewardsView({ points, spendPoints }: RewardsViewProps) {
+export default function RewardsView({ points, setPoints }: RewardsViewProps) {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeCode, setActiveCode] = useState<{ title: string; code: string } | null>(null);
 
-  const rewards: RewardItem[] = [
-    {
-      id: 'rwd-1',
-      title: 'Centennial Compost Seed Pack',
-      description: 'Get a curated pack of native wildflower seeds to support local bee populations and add color to your block.',
-      cost: 150,
-      image: 'https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=400',
-      category: 'Green',
-      icon: 'nature_people',
-    },
-    {
-      id: 'rwd-2',
-      title: 'Free Public Transit Day Pass',
-      description: 'Exchange your points for a fully paid digital day pass on all city subways and bus routes.',
-      cost: 350,
-      image: 'https://images.unsplash.com/photo-1544620347-c4fd4a3d5957?w=400',
-      category: 'Transit',
-      icon: 'directions_bus',
-    },
-    {
-      id: 'rwd-3',
-      title: 'Organic Fair-Trade Coffee Voucher',
-      description: 'Enjoy a free craft drink at any participating neighborhood coffee house or local bakery.',
-      cost: 200,
-      image: 'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=400',
-      category: 'Local Biz',
-      icon: 'local_cafe',
-    },
-    {
-      id: 'rwd-4',
-      title: 'Civic Hero Honor Emblem',
-      description: 'An elegant holographic badge pinned to your community profile celebrating your dedication to the historic district.',
-      cost: 500,
-      image: 'https://images.unsplash.com/photo-1578575437130-527eed3abbec?w=400',
-      category: 'Honor',
-      icon: 'stars',
-    },
-  ];
+  const rewards = REWARDS;
 
+  // The server checks the balance, deducts the cost and issues the code in one step
   const handleRedeem = async (item: RewardItem) => {
-    const success = await spendPoints(item.cost);
-    if (success) {
-      const generatedCode = 'MUNI-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+    try {
+      const { points: total, code } = await api.redeemReward(item.id);
+      setPoints(total);
       setSuccessMessage(`Successfully redeemed: ${item.title}!`);
       setActiveCode({
         title: item.title,
-        code: generatedCode,
+        code,
       });
       setTimeout(() => {
         setSuccessMessage(null);
       }, 4000);
-    } else {
-      alert('You need more Hero Points to redeem this reward! Complete more community tasks or verify hazard reports.');
+    } catch (err) {
+      toast.error(errorMessage(err));
     }
   };
 

@@ -24,6 +24,11 @@ export interface Report {
   image?: string;
   locationDetails?: string;
   matchPercentage?: number;
+  createdAt?: string;
+  // Set by the server for the user making the request
+  isMine?: boolean;
+  hasUpvoted?: boolean;
+  hasVerified?: boolean;
 }
 
 export interface Squad {
