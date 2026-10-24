@@ -126,8 +126,10 @@ export const api = {
     return request<LeaderboardEntry[]>('/api/leaderboard', {}, 'Failed to fetch leaderboard');
   },
 
-  getReports() {
-    return request<Report[]>('/api/reports', {}, 'Failed to fetch reports');
+  // With a location, reports come nearest first and include distanceKm
+  getReports(near?: { lat: number; lng: number }) {
+    const query = near ? `?lat=${near.lat}&lng=${near.lng}` : '';
+    return request<Report[]>(`/api/reports${query}`, {}, 'Failed to fetch reports');
   },
 
   async createReport(report: Partial<Report>): Promise<ReportActionResponse> {

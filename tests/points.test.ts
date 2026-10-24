@@ -3,10 +3,12 @@ import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import app from '../app';
 import User from '../models/User';
+import Report from '../models/Report';
 import { generateToken } from '../utils/jwt';
 import { MAX_REWARDED_REPORTS_PER_DAY, POINTS } from '../src/shared/catalog';
 
 // These tests need a real MongoDB because the points rules rely on atomic MongoDB updates.
+// Report storage, photos and location search are covered in reports.test.ts.
 // CI provides one; locally, set TEST_MONGODB_URI (e.g. mongodb://127.0.0.1:27017) to run them.
 const MONGO_URI = process.env.TEST_MONGODB_URI;
 
@@ -30,7 +32,7 @@ async function createReport(token: string, extra: Record<string, unknown> = {}) 
   return request(app)
     .post('/api/reports')
     .set(auth(token))
-    .send({ title: 'Broken streetlight', description: 'Dark corner at night.', district: 'Westside', ...extra });
+    .send({ title: 'Broken streetlight', description: 'Dark corner at night.', lat: 40.72, lng: -74.0, ...extra });
 }
 
 describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
@@ -44,7 +46,7 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
   });
 
   beforeEach(async () => {
-    await User.deleteMany({});
+    await Promise.all([User.deleteMany({}), Report.deleteMany({})]);
     delete process.env.SIMULATE_AI_VERIFICATION;
   });
 
@@ -52,12 +54,12 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
     it('awards points once, keeps the location and hides the reporter email', async () => {
       const { user, token } = await createUser('Ana');
 
-      const res = await createReport(token, { lat: 40.72, lng: -74.0 });
+      const res = await createReport(token, { lat: 40.73, lng: -73.99 });
 
       expect(res.status).toBe(201);
       expect(res.body.points).toBe(POINTS.REPORT_CREATED);
       expect(await pointsOf(user)).toBe(POINTS.REPORT_CREATED);
-      expect(res.body.report).toMatchObject({ lat: 40.72, lng: -74.0, isMine: true, reporter: { name: 'Ana' } });
+      expect(res.body.report).toMatchObject({ lat: 40.73, lng: -73.99, isMine: true, reporter: { name: 'Ana' } });
       expect(res.body.report.reporter.email).toBeUndefined();
 
       const list = await request(app).get('/api/reports');

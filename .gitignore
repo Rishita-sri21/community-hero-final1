@@ -6,8 +6,6 @@ coverage/
 *.log
 
 .env
-.env.*!.env.example
+.env.*
+!.env.example
 
-# Runtime data written by the server (recreated with seed data when missing)
-reports-db.json
-audit-logs-db.json

@@ -5,6 +5,8 @@ import bcrypt from 'bcryptjs';
 import app from './app';
 import User from './models/User';
 import connectDB from './config/db';
+import Report from './models/Report';
+import { seedDemoReports } from './services/reports';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -28,7 +30,7 @@ async function seedDemoUsers() {
       password: "password123",
       role: "Organizer",
       points: 3100,
-      district: "Westside",
+      district: "Manhattan (New York City, United States)",
       avatar: "https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150"
     },
     {
@@ -37,7 +39,7 @@ async function seedDemoUsers() {
       password: "password123",
       role: "Civil Servant",
       points: 2450,
-      district: "Downtown",
+      district: "Manhattan (New York City, United States)",
       avatar: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150"
     },
     {
@@ -46,7 +48,7 @@ async function seedDemoUsers() {
       password: "password123",
       role: "Volunteer",
       points: 1800,
-      district: "Centennial Park",
+      district: "Brooklyn (New York City, United States)",
       avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150"
     },
     {
@@ -55,7 +57,7 @@ async function seedDemoUsers() {
       password: "password123",
       role: "Volunteer",
       points: 480,
-      district: "Riverside Park",
+      district: "Queens (New York City, United States)",
       avatar: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150"
     }
   ];
@@ -88,6 +90,9 @@ async function startServer() {
   }
 
   await seedDemoUsers();
+  // Distance sorting needs the reports' 2dsphere index; wait until it exists before serving
+  await Report.init();
+  await seedDemoReports();
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
