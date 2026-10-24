@@ -48,3 +48,20 @@ describe('api client', () => {
     expect(storage.getItem('community_hero_token')).toBeNull();
   });
 });
+
+describe('api client: createReport', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('accepts both the new { report, points } response and the older bare report', async () => {
+    vi.stubGlobal('localStorage', createStorage());
+    const { api } = await import('../src/lib/api');
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(201, { report: { id: 'rep-9' }, points: 120 })));
+    expect(await api.createReport({ title: 't', description: 'd' })).toEqual({ report: { id: 'rep-9' }, points: 120 });
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(201, { id: 'rep-10' })));
+    expect(await api.createReport({ title: 't', description: 'd' })).toEqual({ report: { id: 'rep-10' }, points: null });
+  });
+});

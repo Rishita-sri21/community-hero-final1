@@ -190,7 +190,10 @@ if (!res.ok) {
   throw new Error('Failed to create report');
 }
 
-return res.json();
+const data = await res.json();
+// Older backends returned the bare report; accept both so the frontend and
+// backend can be deployed independently.
+return data.report ? data : { report: data, points: null };
 
 
 },
