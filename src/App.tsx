@@ -11,6 +11,8 @@ import AIAssistantWidget from './components/AIAssistantWidget';
 import Toaster from './components/Toaster';
 import { Report, Squad, Citizen, Transformation } from './types';
 import { api } from './lib/api';
+import { toast, errorMessage } from './lib/toast';
+import { centerForDistrict } from './shared/neighborhoods';
 
 export default function App() {
   const [view, setView] = useState<string>('home');
@@ -127,64 +129,23 @@ export default function App() {
     }
   ]);
 
-  // Fetch reports from Express full-stack API endpoint
+  // Load reports, nearest to the user's neighborhood first
   useEffect(() => {
     if (!currentUser) return; // Wait until logged in
     const fetchReports = async () => {
       try {
         setLoading(true);
-        const data = await api.getReports();
-        setReports(data);
+        setReports(await api.getReports(centerForDistrict(currentUser.district)));
       } catch (err) {
-        console.warn("Could not load reports from API endpoint, falling back to local dataset.", err);
-        setReports([
-          {
-            id: 'rep-1',
-            reporter: {
-              name: 'Marcus Thompson',
-              avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150'
-            },
-            timeAgo: '4 hours ago',
-            district: 'Downtown',
-            urgency: 'High',
-            category: 'Pothole',
-            title: 'Hazardous Pothole on 4th & Main',
-            description: 'Major active pothole forming in the middle lane. Forcing cyclists and motorists to swerve dangerously into oncoming lanes.',
-            image: 'https://images.unsplash.com/photo-1515162305285-0293e4767cc2?w=600',
-            upvotes: 18,
-            comments: 3,
-            verified: false,
-            coordinates: { top: '38%', left: '42%' },
-            icon: 'warning',
-            locationDetails: 'Main & 4th intersection, middle lane'
-          },
-          {
-            id: 'rep-2',
-            reporter: {
-              name: 'Elena Rostova',
-              avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150'
-            },
-            timeAgo: '1 day ago',
-            district: 'Centennial Park',
-            urgency: 'Medium',
-            category: 'Park Maintenance',
-            title: 'Damaged Organic Compost Bins',
-            description: 'The green compost bin near the south entrance has a cracked lid, attracting local wildlife pests and reducing waste containment.',
-            image: 'https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=600',
-            upvotes: 12,
-            comments: 1,
-            verified: true,
-            coordinates: { top: '55%', left: '68%' },
-            icon: 'potted_plant',
-            locationDetails: 'South entrance near trail guide sign'
-          }
-        ]);
+        console.warn('Could not load reports', err);
+        toast.error(errorMessage(err, 'Could not load reports. Please refresh to try again.'));
+        setReports([]);
       } finally {
         setLoading(false);
       }
     };
     fetchReports();
-  }, [currentUser]);
+  }, [currentUser?._id, currentUser?.district]);
 
   const handleNavClick = (targetView: string) => {
     if (targetView.includes(':')) {

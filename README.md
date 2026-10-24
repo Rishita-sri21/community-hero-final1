@@ -4,9 +4,10 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 
 ## Features
 
-- **Map-based reporting:** click anywhere on an interactive Leaflet map to drop a report pin.
+- **Map-based reporting:** click anywhere on an interactive Leaflet map to drop a report pin, optionally with a photo.
+- **Your neighborhood first:** the map opens on the neighborhood you picked at sign-up, and reports are sorted by distance from it.
 - **AI triage:** Google Gemini suggests a category and urgency for each new report.
-- **Photo-verified resolution:** capture or upload a photo of the fix; Gemini Vision judges whether the issue is resolved.
+- **Photo-verified resolution:** capture or upload a photo of the fix; Gemini Vision compares it with the reporter's "before" photo (when there is one) and judges whether the issue is resolved. Resolved reports are kept with their fix photo.
 - **Civic assistant:** a chat widget that knows the app and the current reports in your area.
 - **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
 - **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with audit logs.
@@ -18,8 +19,8 @@ Browser (React SPA, src/)
    │  all HTTP calls go through src/lib/api.ts (JSON + Bearer JWT)
    ▼
 Express API (app.ts, started by server.ts)
-   ├── MongoDB via Mongoose ─ users, roles, points
-   ├── JSON files on disk ─── reports, audit logs
+   ├── MongoDB via Mongoose ─ users, reports (2dsphere geo index), audit logs
+   ├── MongoDB GridFS ─────── report and fix photos, served at /api/images/:id
    └── Google Gemini ──────── categorization, chat, photo verification (optional)
 ```
 
@@ -39,7 +40,7 @@ cp .env.example .env   # then fill in MONGODB_URI and JWT_SECRET
 npm run dev            # http://localhost:3000
 ```
 
-On first start the server creates four demo accounts, all with the password `password123`: `elena@example.com` (Organizer), `marcus@example.com` (Civil Servant), `samira@example.com` and `sarah@example.com` (Volunteers).
+On first start the server creates three example reports in New York and four demo accounts, all with the password `password123`: `elena@example.com` (Organizer), `marcus@example.com` (Civil Servant), `samira@example.com` and `sarah@example.com` (Volunteers).
 
 | Variable | Required | Purpose |
 |---|---|---|
@@ -48,7 +49,6 @@ On first start the server creates four demo accounts, all with the password `pas
 | `GEMINI_API_KEY` | no | Enables AI features; without it they use offline fallbacks |
 | `VITE_API_URL` | no | API base URL for the frontend; defaults to same-origin in dev and the deployed backend in production builds |
 | `PORT` | no | Server port, default `3000` |
-| `DATA_DIR` | no | Folder for `reports-db.json` and `audit-logs-db.json` |
 | `SIMULATE_AI_VERIFICATION` | no | Demo only: accept resolution photos without Gemini |
 
 ## Scripts
@@ -57,7 +57,7 @@ On first start the server creates four demo accounts, all with the password `pas
 |---|---|
 | `npm run dev` | Start the API + frontend with hot reload |
 | `npm run lint` | Type-check the whole project with `tsc` |
-| `npm test` | Run the tests. Set `TEST_MONGODB_URI=mongodb://127.0.0.1:27017` to include the points tests, which need MongoDB |
+| `npm test` | Run the tests. Set `TEST_MONGODB_URI=mongodb://127.0.0.1:27017` to include the points and reports tests, which need MongoDB |
 | `npm run build` | Build the frontend to `dist/` and bundle the server to `dist/server.cjs` |
 | `npm start` | Start the server (set `NODE_ENV=production` to serve `dist/`) |
 
@@ -85,7 +85,8 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 |---|---|---|
 | `POST` | `/api/auth/register`, `/api/auth/login` | rate-limited |
 | `GET` | `/api/auth/me` | required |
-| `GET` | `/api/reports` | public (adds `isMine`, `hasUpvoted`, `hasVerified` when signed in) |
+| `GET` | `/api/reports?lat=&lng=` | public; nearest first with `distanceKm` when a location is given (adds `isMine`, `hasUpvoted`, `hasVerified` when signed in) |
+| `GET` | `/api/images/:id` | public |
 | `POST` | `/api/reports`, `/api/reports/:id/upvote`, `/api/reports/:id/verify`, `/api/reports/resolve` | required |
 | `POST` | `/api/actions/green`, `/api/rewards/redeem` | required |
 | `POST` | `/api/users/update-district`, `/join-squad`, `/leave-squad` | required |
@@ -98,7 +99,7 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 
 This project is being upgraded in stages. Current known gaps:
 
-- Reports and audit logs are stored in JSON files, so they don't survive redeploys on hosts with ephemeral disks.
 - Green actions are self-reported, so they're limited to once per action per day rather than proven.
 - Missions, notifications and analytics are front-end demos without server persistence.
-- The map always opens on New York; neighborhoods don't have coordinates yet.
+- Accounts whose district isn't one of the onboarding neighborhoods (older accounts, and demo accounts created before this change) see the map centered on New York, and there's no screen yet to change your neighborhood.
+- New reports and votes appear for other people after a refresh; live updates are planned.

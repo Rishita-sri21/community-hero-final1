@@ -25,6 +25,8 @@ export interface Report {
   locationDetails?: string;
   matchPercentage?: number;
   createdAt?: string;
+  // Distance from the viewer's neighborhood, when reports were requested near a location
+  distanceKm?: number;
   // Set by the server for the user making the request
   isMine?: boolean;
   hasUpvoted?: boolean;

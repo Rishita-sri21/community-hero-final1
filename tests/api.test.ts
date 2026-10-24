@@ -2,8 +2,8 @@ import request from 'supertest';
 import { describe, expect, it } from 'vitest';
 import app from '../app';
 
-// These tests cover routes that don't need MongoDB. Rules that touch users and points
-// are in points.test.ts, which runs against a real MongoDB.
+// These tests cover routes that don't need MongoDB. Everything that reads or writes data
+// is tested in points.test.ts and reports.test.ts, which run against a real MongoDB.
 
 describe('health', () => {
   it('reports the server is up', async () => {
@@ -14,19 +14,13 @@ describe('health', () => {
 });
 
 describe('reports', () => {
-  it('returns the seed reports when no data file exists yet', async () => {
-    const res = await request(app).get('/api/reports');
-    expect(res.status).toBe(200);
-    expect(res.body.map((r: any) => r.id)).toEqual(['rep-1', 'rep-2', 'rep-3']);
-  });
-
   it('requires sign-in to create, upvote, verify or resolve reports', async () => {
     const create = await request(app).post('/api/reports').send({ title: 'Light', description: 'Out' });
     expect(create.status).toBe(401);
 
-    expect((await request(app).post('/api/reports/rep-1/upvote')).status).toBe(401);
-    expect((await request(app).post('/api/reports/rep-1/verify')).status).toBe(401);
-    expect((await request(app).post('/api/reports/resolve').send({ reportId: 'rep-1', image: 'x' })).status).toBe(401);
+    expect((await request(app).post('/api/reports/abc/upvote')).status).toBe(401);
+    expect((await request(app).post('/api/reports/abc/verify')).status).toBe(401);
+    expect((await request(app).post('/api/reports/resolve').send({ reportId: 'abc', image: 'x' })).status).toBe(401);
   });
 });
 

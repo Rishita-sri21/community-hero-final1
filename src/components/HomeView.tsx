@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Report, Squad } from '../types';
 import CameraVerificationModal from './CameraVerificationModal';
 import { api } from '../lib/api';
+import { assetUrl, placeLabel } from '../config';
 import { toast, errorMessage } from '../lib/toast';
 import { GREEN_ACTIONS } from '../shared/catalog';
 import { useReportActions } from '../hooks/useReportActions';
@@ -324,7 +325,7 @@ export default function HomeView({
                     <img src={rep.reporter.avatar} alt="User" className="w-8 h-8 rounded-full object-cover" />
                     <div>
                       <p className="text-xs font-bold text-slate-800">{rep.reporter.name}</p>
-                      <p className="text-[10px] text-slate-400 font-medium">{rep.timeAgo} • {rep.district}</p>
+                      <p className="text-[10px] text-slate-400 font-medium">{rep.timeAgo} • {placeLabel(rep)}</p>
                     </div>
                   </div>
                   <span className={`px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase ${
@@ -339,7 +340,7 @@ export default function HomeView({
                 
                 {rep.image && (
                   <div className="h-28 rounded-xl overflow-hidden bg-slate-100">
-                    <img src={rep.image} alt="Hazard" className="w-full h-full object-cover" />
+                    <img src={assetUrl(rep.image)} alt="Hazard" className="w-full h-full object-cover" />
                   </div>
                 )}
               </div>

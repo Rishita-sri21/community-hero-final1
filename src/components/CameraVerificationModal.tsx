@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Report } from '../types';
 import { api } from '../lib/api';
+import { photoToDataUrl } from '../lib/image';
+import { toast, errorMessage } from '../lib/toast';
 
 interface CameraVerificationModalProps {
   report: Report;
@@ -69,7 +71,7 @@ export default function CameraVerificationModal({
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      const dataUrl = canvas.toDataURL('image/jpeg');
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
       setCapturedImage(dataUrl);
       setStep('preview');
       
@@ -82,15 +84,16 @@ export default function CameraVerificationModal({
   };
 
   // Handle Manual File Upload (Fallback)
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      setCapturedImage(reader.result as string);
+    try {
+      // Shrunk before upload: full-size phone photos are larger than the server accepts
+      setCapturedImage(await photoToDataUrl(file));
       setStep('preview');
-    };
-    reader.readAsDataURL(file);
+    } catch (err) {
+      toast.error(errorMessage(err, 'That photo could not be read. Try another one.'));
+    }
   };
 
   // Submit resolution to backend

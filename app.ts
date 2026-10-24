@@ -1,10 +1,7 @@
 import express from 'express';
-import path from 'path';
 import { GoogleGenAI, Type } from '@google/genai';
 import dotenv from 'dotenv';
-import fs from 'fs';
 import crypto from 'crypto';
-import { Report } from './src/types';
 import bcrypt from 'bcryptjs';
 import User from './models/User';
 import jwt from 'jsonwebtoken';
@@ -13,6 +10,10 @@ import cors from 'cors';
 import { protect } from './middleware/auth';
 import { awardPoints, joinSquad, leaveSquad, logGreenAction, redeemReward } from './services/points';
 import { POINTS, MAX_REWARDED_REPORTS_PER_DAY } from './src/shared/catalog';
+import Report from './models/Report';
+import AuditLog from './models/AuditLog';
+import { CATEGORIES, URGENCIES, iconForCategory, isValidObjectId, listOpenReports, toPublicReport } from './services/reports';
+import { findImage, imageErrorMessage, parseDataUrlImage, readStoredImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
 dotenv.config();
@@ -26,76 +27,14 @@ app.use(cors({
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ limit: '15mb', extended: true }));
 
-// Dynamic Persistence File Paths (reports & audit logs only — users live in MongoDB)
-// DATA_DIR lets tests (and deployments with a mounted disk) choose where these live.
-const DATA_DIR = process.env.DATA_DIR || process.cwd();
-const REPORTS_FILE = path.join(DATA_DIR, 'reports-db.json');
-const AUDIT_LOGS_FILE = path.join(DATA_DIR, 'audit-logs-db.json');
+type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_BACKUP';
 
-// Interface for Audit Logs Database
-interface AuditLogEntry {
-  id: string;
-  timestamp: string;
-  event: 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_BACKUP';
-  message: string;
-  success: boolean;
-  userEmail?: string;
-  ipAddress?: string;
-}
-
-// Audit Logs loader & saver
-function loadAuditLogs(): AuditLogEntry[] {
-  if (!fs.existsSync(AUDIT_LOGS_FILE)) {
-    const defaultLogs: AuditLogEntry[] = [
-      {
-        id: 'log-init',
-        timestamp: new Date().toISOString(),
-        event: 'SECURITY_VIOLATION',
-        message: 'Security Audit Log initialized. Encryption and integrity handshakes active.',
-        success: true,
-        userEmail: 'system@communityhero.gov',
-      },
-    ];
-    fs.writeFileSync(AUDIT_LOGS_FILE, JSON.stringify(defaultLogs, null, 2));
-    return defaultLogs;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(AUDIT_LOGS_FILE, 'utf-8'));
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveAuditLogs(logs: AuditLogEntry[]) {
-  fs.writeFileSync(AUDIT_LOGS_FILE, JSON.stringify(logs, null, 2));
-}
-
-function logAuditEvent(
-  event: AuditLogEntry['event'],
-  message: string,
-  success: boolean,
-  userEmail?: string,
-  ipAddress?: string
-) {
-  try {
-    const logs = loadAuditLogs();
-    const entry: AuditLogEntry = {
-      id: `log-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
-      timestamp: new Date().toISOString(),
-      event,
-      message,
-      success,
-      userEmail,
-      ipAddress: ipAddress || '127.0.0.1',
-    };
-    logs.unshift(entry);
-    if (logs.length > 250) {
-      logs.length = 250; // keep last 250 records
-    }
-    saveAuditLogs(logs);
-  } catch (e) {
+// Records a security-relevant event in MongoDB. Never awaited by callers and never throws:
+// a failed log write must not fail the request that triggered it.
+function logAuditEvent(event: AuditEvent, message: string, success: boolean, userEmail?: string, ipAddress?: string) {
+  AuditLog.create({ event, message, success, userEmail, ipAddress }).catch((e) => {
     console.error('Failed to write audit event:', e);
-  }
+  });
 }
 
 // Sliding-window rate limiter for auth routes
@@ -130,86 +69,6 @@ function rateLimitAuth(req: any, res: any, next: any) {
   }
 
   next();
-}
-
-// Database Helpers: Reports (kept in JSON per project decision — only users moved to MongoDB)
-function loadReports(): Report[] {
-  if (!fs.existsSync(REPORTS_FILE)) {
-    const defaultReports: Report[] = [
-      {
-        id: 'rep-1',
-        reporter: {
-          name: 'Sarah Johnson',
-          avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
-        },
-        timeAgo: '2 hours ago',
-        district: 'Downtown',
-        urgency: 'High',
-        category: 'Pothole',
-        title: 'Deep Pothole on Main St Crossing',
-        description: 'A massive pothole has formed in the middle lane near 4th St. It is causing vehicles to swerve suddenly and is highly hazardous for cyclists riding after sunset.',
-        upvotes: 28,
-        comments: 4,
-        verified: false,
-        coordinates: { top: '35%', left: '25%' },
-        icon: 'warning',
-        image: 'https://images.unsplash.com/photo-1515162305285-0293e4767cc2?w=600',
-        locationDetails: 'Main St & 4th St, Downtown',
-        matchPercentage: 92,
-      },
-      {
-        id: 'rep-2',
-        reporter: {
-          name: 'Marcus Thompson',
-          avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
-        },
-        timeAgo: '1 day ago',
-        district: 'Riverside Park',
-        urgency: 'Medium',
-        category: 'Park Maintenance',
-        title: 'Broken Bench near North Gate Pond',
-        description: 'One of the main support planks on the wooden bench overlooking the duck pond has completely snapped. Needs replacement slats before someone gets hurt.',
-        upvotes: 14,
-        comments: 2,
-        verified: true,
-        coordinates: { top: '58%', left: '72%' },
-        icon: 'potted_plant',
-        image: 'https://images.unsplash.com/photo-1544816155-12df9643f363?w=600',
-        locationDetails: 'Riverside Park Pathway, North Gate',
-      },
-      {
-        id: 'rep-3',
-        reporter: {
-          name: 'Elena Rostova',
-          avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150',
-        },
-        timeAgo: '3 days ago',
-        district: 'Westside',
-        urgency: 'Low',
-        category: 'Streetlight',
-        title: 'Flickering Lamp Post #1024',
-        description: 'The streetlight on the corner of Westside Ave and 12th St is flickering constantly, creating a strobe effect at night. Makes the crosswalk feels unsafe.',
-        upvotes: 8,
-        comments: 1,
-        verified: false,
-        coordinates: { top: '75%', left: '42%' },
-        icon: 'lightbulb',
-        image: 'https://images.unsplash.com/photo-1509024644558-2f56ce76c490?w=600',
-        locationDetails: 'Westside Avenue & 12th St',
-      },
-    ];
-    fs.writeFileSync(REPORTS_FILE, JSON.stringify(defaultReports, null, 2));
-    return defaultReports;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf-8'));
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveReports(reps: Report[]) {
-  fs.writeFileSync(REPORTS_FILE, JSON.stringify(reps, null, 2));
 }
 
 // Lazy initializer for Google GenAI client
@@ -259,18 +118,6 @@ app.use(async (req: any, res, next) => {
 
   next();
 });
-
-// Helper to strip base64 prefix
-function getBase64Data(base64Str: string) {
-  const parts = base64Str.split(';base64,');
-  return parts.length > 1 ? parts[1] : parts[0];
-}
-
-// Get MIME type from base64 string
-function getMimeType(base64Str: string) {
-  const match = base64Str.match(/^data:([^;]+);/);
-  return match ? match[1] : 'image/jpeg';
-}
 
 function isValidCoordinate(value: unknown, limit: number): value is number {
   return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= limit;
@@ -466,46 +313,48 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-// Reports as stored on disk. Fields used for permission checks never leave the server.
-type StoredReport = Report & {
-  reporter: Report['reporter'] & { id?: string; email?: string };
-  createdAt?: string;
-  upvotedBy?: string[];
-  verifiedBy?: string[];
-};
-
-const CATEGORIES = ['Pothole', 'Graffiti', 'Streetlight', 'Park Maintenance', 'Waste Management', 'Water Leakage'];
-const URGENCIES = ['High', 'Medium', 'Low'];
-
-function isOwnReport(report: StoredReport, user: any) {
-  if (report.reporter.id) return report.reporter.id === String(user._id);
-  return !!report.reporter.email && report.reporter.email === user.email;
-}
-
-// Strips private fields (reporter email, who voted) and adds flags for the current viewer
-function toPublicReport(report: StoredReport, user?: any): Report {
-  const { upvotedBy = [], verifiedBy = [], reporter, ...rest } = report;
-  const { email, id, ...publicReporter } = reporter;
-  const userId = user ? String(user._id) : null;
-  return {
-    ...rest,
-    reporter: publicReporter,
-    isMine: user ? isOwnReport(report, user) : false,
-    hasUpvoted: userId ? upvotedBy.includes(userId) : false,
-    hasVerified: userId ? verifiedBy.includes(userId) : false,
-  };
-}
-
-function startOfTodayIso() {
+function startOfToday() {
   const d = new Date();
   d.setUTCHours(0, 0, 0, 0);
-  return d.toISOString();
+  return d;
 }
 
-// Get all reports from persistent storage
-app.get('/api/reports', (req: any, res) => {
-  const reps = loadReports() as StoredReport[];
-  res.json(reps.map((r) => toPublicReport(r, req.user)));
+// Reads ?lat=&lng= from the query string, or undefined if they're missing or invalid
+function nearFromQuery(query: any) {
+  const lat = Number(query.lat);
+  const lng = Number(query.lng);
+  if (query.lat === undefined || query.lng === undefined) return undefined;
+  if (!isValidCoordinate(lat, 90) || !isValidCoordinate(lng, 180)) return undefined;
+  return { lat, lng };
+}
+
+// Open reports. With ?lat=&lng= they come nearest first, each with its distance in km.
+app.get('/api/reports', async (req: any, res) => {
+  try {
+    const reports = await listOpenReports(nearFromQuery(req.query));
+    res.json(reports.map((r: any) => toPublicReport(r, req.user, r.distanceMeters)));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load reports' });
+  }
+});
+
+// Serves an uploaded photo. Photos never change, so browsers may cache them for a long time.
+app.get('/api/images/:id', async (req, res) => {
+  try {
+    const image = await findImage(req.params.id);
+    if (!image) return res.status(404).json({ error: 'Image not found' });
+    res.set({
+      'Content-Type': image.contentType,
+      'Content-Length': String(image.length),
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    image.stream().on('error', () => res.end()).pipe(res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load image' });
+  }
 });
 
 // Create a new report
@@ -515,6 +364,20 @@ app.post('/api/reports', protect, async (req: any, res) => {
   if (typeof reportData.title !== 'string' || !reportData.title.trim() ||
       typeof reportData.description !== 'string' || !reportData.description.trim()) {
     return res.status(400).json({ error: 'Title and description are required' });
+  }
+  if (!isValidCoordinate(reportData.lat, 90) || !isValidCoordinate(reportData.lng, 180)) {
+    return res.status(400).json({ error: 'Pick the location on the map' });
+  }
+
+  // An optional photo of the problem, sent as a data URL and stored in the database
+  let image: string | undefined;
+  if (reportData.image !== undefined && reportData.image !== null && reportData.image !== '') {
+    if (typeof reportData.image !== 'string') {
+      return res.status(400).json({ error: 'The photo could not be read' });
+    }
+    const saved = await saveDataUrlImage(reportData.image, req.user._id);
+    if (saved.ok === false) return res.status(400).json({ error: imageErrorMessage(saved.reason) });
+    image = saved.url;
   }
 
   const ai = getGenAI();
@@ -558,99 +421,70 @@ app.post('/api/reports', protect, async (req: any, res) => {
     }
   }
 
-  const userId = String(req.user._id);
-  const newReport: StoredReport = {
-    id: `rep-${Date.now()}`,
-    reporter: {
-      id: userId,
-      name: req.user.name,
-      avatar: req.user.avatar,
-      email: req.user.email,
-    },
-    createdAt: new Date().toISOString(),
-    timeAgo: 'Just now',
-    district: reportData.district || 'Downtown',
-    urgency,
-    category: autoCategory,
-    title: reportData.title,
-    description: reportData.description,
-    upvotes: 0,
-    comments: 0,
-    verified: false,
-    upvotedBy: [],
-    verifiedBy: [],
-    lat: isValidCoordinate(reportData.lat, 90) ? reportData.lat : undefined,
-    lng: isValidCoordinate(reportData.lng, 180) ? reportData.lng : undefined,
-    coordinates: reportData.coordinates || {
-      top: `${20 + Math.random() * 60}%`,
-      left: `${15 + Math.random() * 70}%`,
-    },
-    icon: autoCategory === 'Pothole' ? 'warning' : autoCategory === 'Streetlight' ? 'lightbulb' : 'potted_plant',
-    image: reportData.image || 'https://images.unsplash.com/photo-1584824486509-112e4181ff6b?w=600',
-    locationDetails: reportData.locationDetails || `${reportData.district} Area`,
-  };
+  const userId = req.user._id;
+  const reportsToday = await Report.countDocuments({ 'reporter.id': userId, createdAt: { $gte: startOfToday() } });
 
-  // Load and save back to back (no await in between) so concurrent requests can't drop each other's writes
-  const reps = loadReports() as StoredReport[];
-  const today = startOfTodayIso();
-  const reportsToday = reps.filter((r) => r.reporter.id === userId && r.createdAt && r.createdAt >= today).length;
-  saveReports([newReport, ...reps]);
+  const report = await Report.create({
+    reporter: { id: userId, name: req.user.name, avatar: req.user.avatar },
+    title: reportData.title.trim(),
+    description: reportData.description.trim(),
+    category: autoCategory,
+    urgency,
+    district: typeof reportData.district === 'string' ? reportData.district : req.user.district,
+    locationDetails: typeof reportData.locationDetails === 'string' ? reportData.locationDetails : undefined,
+    location: { type: 'Point', coordinates: [reportData.lng, reportData.lat] },
+    icon: iconForCategory(autoCategory),
+    image,
+  });
+
+  logAuditEvent('REPORT_CREATED', `Report ${report._id} created by ${req.user.email}`, true, req.user.email, req.ip);
 
   // Points are capped per day so mass-posting reports can't farm them
   let updatedPoints: number | null = null;
   if (reportsToday < MAX_REWARDED_REPORTS_PER_DAY) {
-    updatedPoints = await awardPoints(req.user._id, POINTS.REPORT_CREATED);
+    updatedPoints = await awardPoints(userId, POINTS.REPORT_CREATED);
   }
 
-  res.status(201).json({ report: toPublicReport(newReport, req.user), points: updatedPoints });
+  res.status(201).json({ report: toPublicReport(report, req.user), points: updatedPoints });
 });
 
-// Upvote Report API: once per user, not on your own report
-app.post('/api/reports/:id/upvote', protect, async (req: any, res) => {
-  const userId = String(req.user._id);
-  const reps = loadReports() as StoredReport[];
-  const report = reps.find((r) => r.id === req.params.id);
+// Upvote and verify share their rules: once per person, never on your own report.
+// The conditions are part of the update itself, so two requests at once can't both count.
+async function voteOnReport(req: any, res: any, kind: 'upvote' | 'verify') {
+  const userId = req.user._id;
+  const field = kind === 'upvote' ? 'upvotedBy' : 'verifiedBy';
+
+  const update = kind === 'upvote'
+    ? { $addToSet: { upvotedBy: userId }, $inc: { upvotes: 1 } }
+    : { $addToSet: { verifiedBy: userId }, $set: { verified: true } };
+
+  const report = isValidObjectId(req.params.id)
+    ? await Report.findOneAndUpdate(
+        { _id: req.params.id, status: 'open', 'reporter.id': { $ne: userId }, [field]: { $ne: userId } },
+        update,
+        { returnDocument: 'after' }
+      )
+    : null;
+
   if (!report) {
-    return res.status(404).json({ error: 'Report not found' });
-  }
-  if (isOwnReport(report, req.user)) {
-    return res.status(403).json({ error: "You can't upvote your own report" });
-  }
-  if (report.upvotedBy?.includes(userId)) {
-    return res.status(409).json({ error: 'You already upvoted this report' });
+    // Work out which rule stopped it, to give a useful error
+    const existing = isValidObjectId(req.params.id) ? await Report.findById(req.params.id) : null;
+    if (!existing || existing.status !== 'open') return res.status(404).json({ error: 'Report not found' });
+    if (String(existing.reporter?.id) === String(userId)) {
+      return res.status(403).json({ error: `You can't ${kind} your own report` });
+    }
+    return res.status(409).json({ error: `You already ${kind === 'upvote' ? 'upvoted' : 'verified'} this report` });
   }
 
-  report.upvotes += 1;
-  report.upvotedBy = [...(report.upvotedBy || []), userId];
-  saveReports(reps);
-
-  const points = await awardPoints(req.user._id, POINTS.REPORT_UPVOTED);
+  if (kind === 'verify') {
+    logAuditEvent('REPORT_VERIFIED', `Report ${report._id} verified by ${req.user.email}`, true, req.user.email, req.ip);
+  }
+  const points = await awardPoints(userId, kind === 'upvote' ? POINTS.REPORT_UPVOTED : POINTS.REPORT_VERIFIED);
   res.json({ report: toPublicReport(report, req.user), points });
-});
+}
 
-// Verify Report API: once per user, not on your own report. A report is verified once anyone verifies it.
-app.post('/api/reports/:id/verify', protect, async (req: any, res) => {
-  const userId = String(req.user._id);
-  const reps = loadReports() as StoredReport[];
-  const report = reps.find((r) => r.id === req.params.id);
-  if (!report) {
-    return res.status(404).json({ error: 'Report not found' });
-  }
-  if (isOwnReport(report, req.user)) {
-    return res.status(403).json({ error: "You can't verify your own report" });
-  }
-  if (report.verifiedBy?.includes(userId)) {
-    return res.status(409).json({ error: 'You already verified this report' });
-  }
-
-  report.verifiedBy = [...(report.verifiedBy || []), userId];
-  report.verified = true;
-  saveReports(reps);
-
-  logAuditEvent('REPORT_VERIFIED', `Report ${report.id} verified by ${req.user.email}`, true, req.user.email, req.ip);
-  const points = await awardPoints(req.user._id, POINTS.REPORT_VERIFIED);
-  res.json({ report: toPublicReport(report, req.user), points });
-});
+app.post('/api/reports/:id/upvote', protect, (req, res) => voteOnReport(req, res, 'upvote'));
+app.post('/api/reports/:id/verify', protect, (req, res) => voteOnReport(req, res, 'verify'));
 
 // AI Assistant Chat endpoint
 app.post('/api/assistant/chat', async (req, res) => {
@@ -907,37 +741,45 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
   if (!reportId || typeof image !== 'string' || !image) {
     return res.status(400).json({ error: 'Missing reportId or image' });
   }
+  const photo = parseDataUrlImage(image);
+  if (photo.ok === false) {
+    return res.status(400).json({ success: false, message: imageErrorMessage(photo.reason) });
+  }
 
-  // Find the target report
-  const report = (loadReports() as StoredReport[]).find((r) => r.id === reportId);
-  if (!report) {
+  const report = isValidObjectId(reportId) ? await Report.findById(reportId) : null;
+  if (!report || report.status !== 'open') {
     return res.status(404).json({ error: 'Report not found' });
   }
-  if (isOwnReport(report, req.user)) {
+  if (String(report.reporter?.id) === String(req.user._id)) {
     return res.status(403).json({ error: "You can't resolve your own report" });
   }
-  const title = report.title;
-  const desc = report.description;
 
-  // Removes the report and pays out. Reports are re-read here because the AI call above
-  // takes seconds, and reports created meanwhile must not be overwritten.
-  const completeResolution = async () => {
-    const latest = loadReports();
-    if (!latest.some((r) => r.id === reportId)) {
-      return null; // someone else resolved it while we were waiting
-    }
-    saveReports(latest.filter((r) => r.id !== reportId));
-    logAuditEvent('REPORT_RESOLVED', `Report ${reportId} resolved by ${req.user.email}`, true, req.user.email, req.ip);
+  // Marks the report resolved and pays out. The status check is part of the update,
+  // so if two people resolve the same report at once, only one of them gets the points.
+  const completeResolution = async (details: string) => {
+    const claimed = await Report.findOneAndUpdate(
+      { _id: report._id, status: 'open' },
+      { $set: { status: 'resolved', resolution: { by: req.user._id, at: new Date(), details } } },
+      { returnDocument: 'after' }
+    );
+    if (!claimed) return null; // someone else resolved it while we were waiting
+
+    // Keep the fix photo with the report, so the resolution can be reviewed later
+    const photoUrl = await storeImage(photo, req.user._id);
+    await Report.updateOne({ _id: report._id }, { $set: { 'resolution.image': photoUrl } });
+
+    logAuditEvent('REPORT_RESOLVED', `Report ${report._id} resolved by ${req.user.email}`, true, req.user.email, req.ip);
     return awardPoints(req.user._id, POINTS.REPORT_RESOLVED);
   };
 
   // Demo mode only: without a Gemini key the photo can't be checked, so by default we refuse
-  // rather than pretend. SIMULATE_AI_VERIFICATION=true restores the old always-succeeds behavior.
+  // rather than pretend. SIMULATE_AI_VERIFICATION=true accepts any photo, for demos.
   if (!ai) {
     if (process.env.SIMULATE_AI_VERIFICATION !== 'true') {
       return res.status(503).json({ success: false, message: 'Photo verification is unavailable right now. Please try again later.' });
     }
-    const finalPoints = await completeResolution();
+    const details = `Simulated verification of: "${report.title}".`;
+    const finalPoints = await completeResolution(details);
     if (finalPoints === null) {
       return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
     }
@@ -947,7 +789,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
       auditResult: {
         success: true,
         confidenceScore: 94,
-        restorationDetails: `Simulated verification of: "${title}".`,
+        restorationDetails: details,
         co2OffsetKg: Math.floor(10 + Math.random() * 25),
         ecoIndexBoost: Math.floor(4 + Math.random() * 6),
         safetyScoreIncrease: Math.floor(8 + Math.random() * 7),
@@ -957,71 +799,66 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
     });
   }
 
-  {
-    try {
-      const mimeType = getMimeType(image);
-      const base64Data = getBase64Data(image);
+  try {
+    // When the reporter uploaded a photo of the problem, the AI compares before and after
+    // instead of judging the fix photo on its own, which makes unrelated photos easy to spot.
+    const before = report.image ? await readStoredImage(report.image) : null;
+    const toPart = (img: { contentType: string; data: Buffer }) => ({
+      inlineData: { mimeType: img.contentType, data: img.data.toString('base64') },
+    });
 
-      const imagePart = {
-        inlineData: {
-          mimeType,
-          data: base64Data,
-        },
-      };
+    const prompt = `You are a Municipal Civil Integrity Auditor. Decide whether the AFTER photo shows the following reported issue resolved, cleaned up or fully repaired:
+      Report Title: "${report.title}"
+      Report Description: "${report.description}"
+      ${before
+        ? 'The first image is the BEFORE photo the resident took of the problem. The second image is the AFTER photo. Set success to true only if the AFTER photo plausibly shows the same place as the BEFORE photo, with the problem fixed.'
+        : 'The only image is the AFTER photo. Set success to true only if it clearly shows the kind of place described, with the problem fixed.'}
+      If the AFTER photo is unrelated to the report (a screenshot, a person, an indoor scene, a different kind of place) or the problem is still visible, set success to false and explain why in restorationDetails.
+      Return a JSON response using the specified schema.`;
 
-      const prompt = `You are a Municipal Civil Integrity Auditor. Analyze this image and determine if it shows a resolved, cleaned up, or fully repaired state for the following reported issue:
-      Report Title: "${title}"
-      Report Description: "${desc}"
-
-      Analyze the visual content of the image. Does it look like a completed repair or cleanup?
-      Return a JSON response using the specified schema with details of the repair, confidence level, and computed impact statistics.
-      Be realistic but encouraging. If it's a completely unrelated picture, set success to false. Otherwise, set success to true.`;
-
-      const aiRes = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
-        contents: { parts: [imagePart, { text: prompt }] },
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              success: { type: Type.BOOLEAN, description: 'True if image shows the reported issue has been successfully resolved/repaired/cleaned.' },
-              confidenceScore: { type: Type.INTEGER, description: 'Confidence score from 0 to 100 on the quality and success of the resolution.' },
-              restorationDetails: { type: Type.STRING, description: 'Brief detailed summary of the completed restoration seen in the photo.' },
-              co2OffsetKg: { type: Type.INTEGER, description: 'Estimated carbon offset in kg (range 5 to 45).' },
-              ecoIndexBoost: { type: Type.INTEGER, description: 'Eco-index boost in percentage (range 2 to 12).' },
-              safetyScoreIncrease: { type: Type.INTEGER, description: 'Increase in public safety score percentage (range 5 to 15).' },
-            },
-            required: ['success', 'confidenceScore', 'restorationDetails', 'co2OffsetKg', 'ecoIndexBoost', 'safetyScoreIncrease'],
+    const aiRes = await ai.models.generateContent({
+      model: 'gemini-3.5-flash',
+      contents: { parts: [...(before ? [toPart(before)] : []), toPart(photo), { text: prompt }] },
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            success: { type: Type.BOOLEAN, description: 'True if image shows the reported issue has been successfully resolved/repaired/cleaned.' },
+            confidenceScore: { type: Type.INTEGER, description: 'Confidence score from 0 to 100 on the quality and success of the resolution.' },
+            restorationDetails: { type: Type.STRING, description: 'Brief detailed summary of the completed restoration seen in the photo.' },
+            co2OffsetKg: { type: Type.INTEGER, description: 'Estimated carbon offset in kg (range 5 to 45).' },
+            ecoIndexBoost: { type: Type.INTEGER, description: 'Eco-index boost in percentage (range 2 to 12).' },
+            safetyScoreIncrease: { type: Type.INTEGER, description: 'Increase in public safety score percentage (range 5 to 15).' },
           },
+          required: ['success', 'confidenceScore', 'restorationDetails', 'co2OffsetKg', 'ecoIndexBoost', 'safetyScoreIncrease'],
         },
-      });
+      },
+    });
 
-      const auditResult = JSON.parse(aiRes.text || '{}');
+    const auditResult = JSON.parse(aiRes.text || '{}');
 
-      if (auditResult.success) {
-        const finalPoints = await completeResolution();
-        if (finalPoints === null) {
-          return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
-        }
-
-        return res.json({
-          success: true,
-          message: 'Resolution verified successfully!',
-          auditResult,
-          heroPointsAwarded: POINTS.REPORT_RESOLVED,
-          userSession: { points: finalPoints },
-        });
-      } else {
-        return res.json({
-          success: false,
-          message: auditResult.restorationDetails || 'Civic Vision Audit was unable to verify the resolution. Please capture a clearer image directly showing the completed repair.',
-        });
+    if (auditResult.success === true) {
+      const finalPoints = await completeResolution(String(auditResult.restorationDetails || ''));
+      if (finalPoints === null) {
+        return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
       }
-    } catch (err) {
-      console.error('Vision API error:', err);
-      return res.status(502).json({ success: false, message: 'Photo verification failed. Please try again.' });
+      return res.json({
+        success: true,
+        message: 'Resolution verified successfully!',
+        auditResult,
+        heroPointsAwarded: POINTS.REPORT_RESOLVED,
+        userSession: { points: finalPoints },
+      });
     }
+
+    return res.json({
+      success: false,
+      message: auditResult.restorationDetails || 'Civic Vision Audit was unable to verify the resolution. Please capture a clearer image directly showing the completed repair.',
+    });
+  } catch (err) {
+    console.error('Vision API error:', err);
+    return res.status(502).json({ success: false, message: 'Photo verification failed. Please try again.' });
   }
 });
 
@@ -1030,7 +867,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
 // ==========================================
 
 // Secure endpoint: Get system audit logs (Civil Servants & Organizers only)
-app.get('/api/admin/audit-logs', (req: any, res) => {
+app.get('/api/admin/audit-logs', async (req: any, res) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized credentials session' });
   }
@@ -1038,8 +875,13 @@ app.get('/api/admin/audit-logs', (req: any, res) => {
     logAuditEvent('SECURITY_VIOLATION', `Forbidden access to audit logs by ${req.user.email}`, false, req.user.email, req.ip);
     return res.status(403).json({ error: 'Forbidden: Requires elevated privileges.' });
   }
-  const logs = loadAuditLogs();
-  res.json(logs);
+  try {
+    const logs = await AuditLog.find().sort({ timestamp: -1 }).limit(250).lean();
+    res.json(logs.map(({ _id, __v, ...log }: any) => ({ id: String(_id), ...log })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load audit logs' });
+  }
 });
 
 // Secure endpoint: Get database status and sizes
@@ -1053,32 +895,25 @@ app.get('/api/admin/db/status', async (req: any, res) => {
   }
 
   try {
-    const usersCount = await User.countDocuments();
-    const reports = loadReports();
-    const logs = loadAuditLogs();
-
-    const getFileSize = (filePath: string) => {
-      try {
-        if (fs.existsSync(filePath)) {
-          const stats = fs.statSync(filePath);
-          return `${(stats.size / 1024).toFixed(2)} KB`;
-        }
-      } catch (e) {}
-      return '0.00 KB';
-    };
+    const [usersCount, reportsCount, resolvedCount, auditLogsCount] = await Promise.all([
+      User.countDocuments(),
+      Report.countDocuments({ status: 'open' }),
+      Report.countDocuments({ status: 'resolved' }),
+      AuditLog.countDocuments(),
+    ]);
 
     res.json({
       status: 'Operational',
-      engine: 'MongoDB (Users) + JSON (Reports/Audit Logs)',
+      engine: 'MongoDB',
       metrics: {
         usersCount,
-        reportsCount: reports.length,
-        auditLogsCount: logs.length,
+        reportsCount,
+        auditLogsCount,
       },
       files: [
-        { name: 'Users Collection', path: 'MongoDB', size: `${usersCount} documents` },
-        { name: 'Reports Dynamic Catalog', path: REPORTS_FILE, size: getFileSize(REPORTS_FILE) },
-        { name: 'Cryptographic Audit logs', path: AUDIT_LOGS_FILE, size: getFileSize(AUDIT_LOGS_FILE) },
+        { name: 'Users Collection', path: 'MongoDB: users', size: `${usersCount} documents` },
+        { name: 'Reports Collection', path: 'MongoDB: reports', size: `${reportsCount} open, ${resolvedCount} resolved` },
+        { name: 'Audit Log Collection', path: 'MongoDB: auditlogs', size: `${auditLogsCount} entries (kept 90 days)` },
       ],
       lastBackup: new Date().toISOString(),
     });

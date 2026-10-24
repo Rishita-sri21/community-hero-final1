@@ -4,10 +4,13 @@ import { motion, AnimatePresence } from 'motion/react';
 import L from 'leaflet';
 import { Report } from '../types';
 import { api } from '../lib/api';
+import { assetUrl, placeLabel } from '../config';
 import CameraVerificationModal from './CameraVerificationModal';
 import { toast, errorMessage } from '../lib/toast';
 import { useReportActions } from '../hooks/useReportActions';
 import { POINTS } from '../shared/catalog';
+import { centerForDistrict, distanceBetweenKm } from '../shared/neighborhoods';
+import { photoToDataUrl } from '../lib/image';
 
 interface MapViewProps {
   reports: Report[];
@@ -66,8 +69,6 @@ function createCustomMarkerIcon(category: string, urgency: string, isSelected: b
   });
 }
 
-const NYC_CENTER: [number, number] = [40.7128, -74.0060];
-
 export default function MapView({
   reports,
   setReports,
@@ -88,7 +89,8 @@ const [loadingMission, setLoadingMission] = useState(false);
   const [newReportTitle, setNewReportTitle] = useState('');
   const [newReportDesc, setNewReportDescription] = useState('');
   const [newReportUrgency, setNewReportUrgency] = useState<'High' | 'Medium' | 'Low'>('Medium');
-  const [newReportDistrict, setNewReportDistrict] = useState(userDistrict || 'Downtown');
+  const [newReportPhoto, setNewReportPhoto] = useState<string | null>(null);
+  const [submittingReport, setSubmittingReport] = useState(false);
   const [newReportCategory, setNewReportCategory] = useState('Pothole');
 
 
@@ -138,12 +140,9 @@ const [loadingMission, setLoadingMission] = useState(false);
     ]
   });
 };
-  // Sync district with user's selected neighborhood
-  useEffect(() => {
-    if (userDistrict) {
-      setNewReportDistrict(userDistrict);
-    }
-  }, [userDistrict]);
+  // The map opens on the user's neighborhood
+  const { lat: centerLat, lng: centerLng } = centerForDistrict(userDistrict);
+  const mapCenter: [number, number] = [centerLat, centerLng];
 
   useEffect(() => {
   if (innerTab === 'map' && mapInstanceRef.current) {
@@ -157,7 +156,7 @@ const [loadingMission, setLoadingMission] = useState(false);
   const [selectedCoordinates, setSelectedCoordinates] = useState<{ lat: number; lng: number } | null>(null);
 
   // Map Active Popup issue
-  const [activeReportId, setActiveReportId] = useState<string | null>('rep-1');
+  const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [smartScanVerified, setSmartScanVerified] = useState(false);
   const [resolvingReport, setResolvingReport] = useState<Report | null>(null);
 
@@ -195,7 +194,7 @@ const [loadingMission, setLoadingMission] = useState(false);
 
     if (!mapInstanceRef.current) {
       const map = L.map(mapContainerRef.current, {
-        center: NYC_CENTER,
+        center: mapCenter,
         zoom: 13,
         zoomControl: false,
       });
@@ -215,11 +214,10 @@ const [loadingMission, setLoadingMission] = useState(false);
       markersGroupRef.current = markersGroup;
       mapInstanceRef.current = map;
 
+      // Re-measure once the layout settles, unless the user already left the map tab
       setTimeout(() => {
-  map.invalidateSize();
-}, 500);
-
-   
+        if (mapInstanceRef.current === map) map.invalidateSize();
+      }, 500);
 
       // Handle map clicks to place exact pins for community issues
       map.on('click', (e: L.LeafletMouseEvent) => {
@@ -257,10 +255,9 @@ const [loadingMission, setLoadingMission] = useState(false);
       markersGroup.clearLayers();
 
       reports.forEach((rep) => {
-        const latLng = getLatLngFromReport(rep, NYC_CENTER);
+        const latLng = getLatLngFromReport(rep, mapCenter);
         const isSelected = activeReportId === rep.id;
         const pinIcon = createCustomMarkerIcon(rep.category, rep.urgency, isSelected);
-        console.log(reports);
 
         const marker = L.marker(latLng, { icon: pinIcon });
         
@@ -301,22 +298,27 @@ const [loadingMission, setLoadingMission] = useState(false);
 
   const handleCreateReportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newReportTitle || !newReportDesc) return;
+    if (!newReportTitle || !newReportDesc || submittingReport) return;
 
-    
-
+    setSubmittingReport(true);
     try {
       const partialReport: Partial<Report> = {
-  title: newReportTitle,
-  description: newReportDesc,
-  urgency: newReportUrgency,
-  district: newReportDistrict,
-  category: newReportCategory,
-  lat: selectedCoordinates?.lat,
-  lng: selectedCoordinates?.lng,
-};
+        title: newReportTitle,
+        description: newReportDesc,
+        urgency: newReportUrgency,
+        district: userDistrict,
+        category: newReportCategory,
+        lat: selectedCoordinates?.lat,
+        lng: selectedCoordinates?.lng,
+        image: newReportPhoto || undefined,
+      };
 
       const { report: created, points: updatedPoints } = await api.createReport(partialReport);
+      // Same distance label as the reports loaded from the server
+      if (created.lat !== undefined && created.lng !== undefined) {
+        const km = distanceBetweenKm({ lat: centerLat, lng: centerLng }, { lat: created.lat, lng: created.lng });
+        created.distanceKm = Math.round(km * 10) / 10;
+      }
       setReports([created, ...reports]);
       if (updatedPoints !== null) {
         setPoints(updatedPoints);
@@ -328,10 +330,24 @@ const [loadingMission, setLoadingMission] = useState(false);
       // Reset fields
       setNewReportTitle('');
       setNewReportDescription('');
+      setNewReportPhoto(null);
       setShowNewReportModal(false);
     } catch (err) {
       // Keep the form open with the user's text so they can retry; never show a fake report
       toast.error(errorMessage(err, 'Could not post your report. Please try again.'));
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
+
+  const handlePhotoChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // lets the same file be chosen again after removing it
+    if (!file) return;
+    try {
+      setNewReportPhoto(await photoToDataUrl(file));
+    } catch (err) {
+      toast.error(errorMessage(err, 'That photo could not be read. Try another one.'));
     }
   };
 
@@ -520,12 +536,18 @@ const [loadingMission, setLoadingMission] = useState(false);
                 >
                   {/* Photo area */}
                   <div className="relative h-28 w-full overflow-hidden bg-slate-100 border-b border-slate-50">
-                    <img 
-                      alt="Issue" 
-                      className="w-full h-full object-cover" 
-                      referrerPolicy="no-referrer"
-                      src={rep.image || 'https://images.unsplash.com/photo-1515162305285-0293e4767cc2?w=600'}
-                    />
+                    {rep.image ? (
+                      <img 
+                        alt="Issue" 
+                        className="w-full h-full object-cover" 
+                        referrerPolicy="no-referrer"
+                        src={assetUrl(rep.image)}
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center text-slate-400 text-[11px] font-semibold gap-1">
+                        <span className="material-symbols-outlined text-base">no_photography</span> No photo yet
+                      </div>
+                    )}
                     <div className="absolute top-3 left-3 bg-white/95 backdrop-blur-sm px-2.5 py-1 rounded-full text-[10px] font-bold text-slate-800 flex items-center gap-1 shadow-sm">
                       <span className="material-symbols-outlined text-[12px]">schedule</span> Reported {rep.timeAgo}
                     </div>
@@ -716,7 +738,7 @@ const [loadingMission, setLoadingMission] = useState(false);
                       />
                       <div>
                         <p className="font-sans text-xs font-bold text-slate-800">{rep.reporter.name}</p>
-                        <p className="font-sans text-[10px] text-slate-400 font-semibold leading-none mt-1">{rep.timeAgo} • {rep.district}</p>
+                        <p className="font-sans text-[10px] text-slate-400 font-semibold leading-none mt-1">{rep.timeAgo} • {placeLabel(rep)}</p>
                       </div>
                     </div>
 
@@ -747,7 +769,7 @@ const [loadingMission, setLoadingMission] = useState(false);
                   {/* Optional Report Image */}
                   {rep.image && (
                     <div className="h-40 w-full overflow-hidden rounded-xl border border-slate-100 mt-2">
-                      <img src={rep.image} alt={rep.title} className="w-full h-full object-cover" />
+                      <img src={assetUrl(rep.image)} alt={rep.title} className="w-full h-full object-cover" />
                     </div>
                   )}
 
@@ -972,7 +994,6 @@ const [loadingMission, setLoadingMission] = useState(false);
                   <div>
                     <span className="font-bold">📍 Tactical Pin Coordinates Attached:</span>
                     <span className="font-mono ml-1">Lat {selectedCoordinates.lat.toFixed(5)}, Lng {selectedCoordinates.lng.toFixed(5)}</span>
-                    <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">Includes coordinate synchronization bonus points!</p>
                   </div>
                 </div>
               )}
@@ -992,23 +1013,6 @@ const [loadingMission, setLoadingMission] = useState(false);
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">District / Area</label>
-                    <select
-                      value={newReportDistrict}
-                      onChange={(e) => setNewReportDistrict(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-sans text-xs focus:outline-none cursor-pointer focus:ring-2 focus:ring-blue-600"
-                    >
-                      {userDistrict && !['Downtown', 'Riverside Park', 'Westside', 'Oakwood'].includes(userDistrict) && (
-                        <option value={userDistrict}>{userDistrict}</option>
-                      )}
-                      <option value="Downtown">Downtown</option>
-                      <option value="Riverside Park">Riverside Park</option>
-                      <option value="Westside">Westside</option>
-                      <option value="Oakwood">Oakwood</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Category</label>
                     <select
                       value={newReportCategory}
@@ -1019,12 +1023,10 @@ const [loadingMission, setLoadingMission] = useState(false);
                       <option>Graffiti</option>
                       <option>Streetlight</option>
                       <option>Park Maintenance</option>
+                      <option>Waste Management</option>
                       <option>Water Leakage</option>
                     </select>
                   </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Urgency Level</label>
                     <select
@@ -1051,11 +1053,35 @@ const [loadingMission, setLoadingMission] = useState(false);
                   />
                 </div>
 
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Photo (optional)</span>
+                  {newReportPhoto ? (
+                    <div className="relative h-36 rounded-xl overflow-hidden border border-slate-200">
+                      <img src={newReportPhoto} alt="Your photo of the issue" className="w-full h-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setNewReportPhoto(null)}
+                        className="absolute top-2 right-2 bg-black/60 text-white text-[10px] font-bold px-2.5 py-1 rounded-full cursor-pointer hover:bg-black/80"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : (
+                    <label className="flex items-center justify-center gap-2 h-20 rounded-xl border-2 border-dashed border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500 cursor-pointer hover:border-blue-400 hover:text-blue-600 transition-colors">
+                      <span className="material-symbols-outlined text-lg">add_a_photo</span>
+                      Add a photo of the problem
+                      <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={handlePhotoChosen} />
+                    </label>
+                  )}
+                  <p className="text-[10px] text-slate-400">A photo helps neighbors verify it, and lets the AI compare it with the fix photo later.</p>
+                </div>
+
                 <button 
                   type="submit"
-                  className="w-full py-3.5 rounded-full bg-blue-600 text-white font-sans text-xs font-bold shadow-md hover:bg-blue-700 transition-transform hover:scale-[1.01] cursor-pointer"
+                  disabled={submittingReport}
+                  className="w-full py-3.5 rounded-full bg-blue-600 text-white font-sans text-xs font-bold shadow-md hover:bg-blue-700 transition-transform hover:scale-[1.01] cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                 >
-                  Post Report (+20 Points)
+                  {submittingReport ? 'Posting...' : `Post Report (+${POINTS.REPORT_CREATED} Points)`}
                 </button>
               </form>
             </motion.div>
