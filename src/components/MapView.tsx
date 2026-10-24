@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import L from 'leaflet';
 import { Report } from '../types';
@@ -198,11 +199,10 @@ const [loadingMission, setLoadingMission] = useState(false);
         zoomControl: false,
       });
 
-      // Render modern high-contrast Voyager tile overlays
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
+      // OpenStreetMap's standard tiles need no API key (CARTO's basemaps now require one)
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19
       }).addTo(map);
 
       // Top-right aligned zoom control buttons
@@ -278,6 +278,16 @@ const [loadingMission, setLoadingMission] = useState(false);
       });
     }
   }, [innerTab, reports, activeReportId]);
+
+  // Close the report form with the Escape key
+  useEffect(() => {
+    if (!showNewReportModal) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowNewReportModal(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showNewReportModal]);
 
   // Clean selection pin marker when modal closes
   useEffect(() => {
@@ -967,15 +977,24 @@ const [loadingMission, setLoadingMission] = useState(false);
         </div>
       )}
 
-      {/* Submit New Report Modal Overlay */}
+      {/* Submit New Report Modal Overlay.
+          Rendered into document.body so it sits above the fixed header instead of inside <main>'s stacking context. */}
+      {createPortal(
       <AnimatePresence>
         {showNewReportModal && (
-          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[100] p-4">
+          <div
+            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-start sm:items-center justify-center z-[100] p-4 overflow-y-auto"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowNewReportModal(false);
+            }}
+          >
             <motion.div 
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-white rounded-2xl w-full max-w-lg shadow-2xl p-6 md:p-8 space-y-6 relative overflow-hidden border border-slate-100"
+              role="dialog"
+              aria-modal="true"
+              className="bg-white rounded-2xl w-full max-w-lg shadow-2xl p-6 md:p-8 space-y-6 relative border border-slate-100 my-auto"
             >
               <div className="flex justify-between items-center border-b border-slate-100 pb-4">
                 <h3 className="font-sans text-lg font-black text-slate-800 flex items-center gap-1.5">
@@ -983,6 +1002,8 @@ const [loadingMission, setLoadingMission] = useState(false);
                   Report a Community Issue
                 </h3>
                 <button 
+                  type="button"
+                  aria-label="Close"
                   onClick={() => setShowNewReportModal(false)}
                   className="w-8 h-8 rounded-full hover:bg-slate-100 text-slate-500 flex items-center justify-center transition-colors focus:outline-none cursor-pointer"
                 >
@@ -1097,7 +1118,9 @@ const [loadingMission, setLoadingMission] = useState(false);
             }}
           />
         )}
-      </AnimatePresence>
+      </AnimatePresence>,
+      document.body
+      )}
 
     </div>
   );
