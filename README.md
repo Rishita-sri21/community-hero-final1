@@ -13,8 +13,10 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **Neighborhood analytics:** open and resolved counts, resolution rate, median and average time to fix, a 7-day reported/resolved chart and a per-category breakdown, computed by a single MongoDB aggregation (`$geoNear` + `$facet`).
 - **Before and after stories:** every resolved report with its fix photo, next to the reporter's original photo.
 - **Civic assistant:** a Gemini chat that is given the app's rules and the open reports nearest the user, looked up by the server. Without a Gemini key it says it's unavailable rather than answering with canned text.
+- **Squads and your impact:** three standing squads, each looking after a few report categories. Member counts, open reports near you and fixes by members are counted from the database; the "Your impact" card shows your real reports, fixes, verifications, upvotes received, rank, and badges earned from them.
+- **Notifications:** when a neighbor upvotes, verifies or fixes your report, it shows up under the bell (stored in MongoDB, expire after 60 days).
 - **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
-- **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with audit logs.
+- **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with live database measurements (version, ping, storage), the audit log, and NDJSON exports streamed from a database cursor.
 
 ## Architecture
 
@@ -23,7 +25,7 @@ Browser (React SPA, src/)
    │  all HTTP calls go through src/lib/api.ts (JSON + Bearer JWT)
    ▼
 Express API (app.ts, started by server.ts)
-   ├── MongoDB via Mongoose ─ users, reports (2dsphere geo index), audit logs
+   ├── MongoDB via Mongoose ─ users, reports (2dsphere geo index), notifications, audit logs
    ├── MongoDB GridFS ─────── report and fix photos, served at /api/images/:id
    ├── Google Gemini ──────── categorization, chat, photo verification (optional)
    └── GET /api/events ────── live updates pushed to every open browser (Server-Sent Events)
@@ -110,7 +112,9 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `GET` | `/api/missions/plan?lat=&lng=` | required |
 | `GET` | `/api/analytics?lat=&lng=` | public |
 | `GET` | `/api/stories` | public |
-| `GET/POST` | `/api/admin/*` | Civil Servant or Organizer |
+| `GET` | `/api/squads`, `/api/users/me/stats` | required |
+| `GET` | `/api/notifications`; `POST` `/api/notifications/read` | required |
+| `GET` | `/api/admin/audit-logs`, `/api/admin/db/status`, `/api/admin/export/:collection` | Civil Servant or Organizer |
 | `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`) |
 | `GET` | `/api/health` | public (503 while the database is unreachable) |
 
@@ -119,7 +123,6 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 This project is being upgraded in stages. Current known gaps:
 
 - Green actions are self-reported, so they're limited to once per action per day rather than proven.
-- Squads, notifications and the admin "backup" button are still front-end demos; they're next in line.
 - Mission distances are straight lines between stops; walking time adds 30% for streets. A routing engine (for example OSRM) would give real street paths.
 - Accounts whose district isn't one of the onboarding neighborhoods (older accounts, and demo accounts created before this change) see the map centered on New York, and there's no screen yet to change your neighborhood.
 - Live updates go through the server's memory, so they reach everyone only while the backend runs as a single instance. Scaling out would need a shared channel such as MongoDB change streams.

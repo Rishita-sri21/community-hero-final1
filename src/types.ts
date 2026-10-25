@@ -33,15 +33,42 @@ export interface Report {
   hasVerified?: boolean;
 }
 
+// A squad with numbers counted from the database (GET /api/squads)
 export interface Squad {
   id: string;
   name: string;
   description: string;
-  volunteersCount: number;
-  volunteersMax: number;
-  distance: string;
-  category: string;
+  categories: string[];
   icon: string;
+  joinPoints: number;
+  members: number;
+  memberAvatars: string[];
+  // Open reports in the squad's categories near the viewer
+  openNearby: number;
+  // Reports in those categories fixed by squad members
+  fixedByMembers: number;
+  joined: boolean;
+}
+
+export interface UserStats {
+  reportsCreated: number;
+  reportsFixed: number;
+  verificationsGiven: number;
+  upvotesReceived: number;
+  rank: number;
+  points: number;
+  squadsJoined: number;
+}
+
+export interface AppNotification {
+  id: string;
+  type: 'upvote' | 'verify' | 'resolved';
+  reportId?: string;
+  reportTitle?: string;
+  actorName: string;
+  read: boolean;
+  createdAt: string;
+  timeAgo: string;
 }
 
 export interface Citizen {
