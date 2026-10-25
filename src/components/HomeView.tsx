@@ -80,7 +80,9 @@ export default function HomeView({
   };
 
   // SVG circular properties
-  const targetPercent = Math.min((points / 1200) * 100, 100);
+  // Progress toward the next 500-point milestone
+  const nextMilestone = (Math.floor(points / 500) + 1) * 500;
+  const targetPercent = ((points % 500) / 500) * 100;
 
   return (
     <div className="space-y-12 animate-entrance max-w-[1200px] mx-auto px-4 py-6">
@@ -93,13 +95,13 @@ export default function HomeView({
           <div className="flex-1 space-y-4">
             <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-blue-50 text-blue-700 font-sans text-xs font-bold border border-blue-100">
               <span className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-pulse"></span>
-              Weekly Impact Active
+              {reports.length} open report{reports.length === 1 ? '' : 's'} near you
             </div>
             <h2 className="font-sans text-3xl md:text-4xl font-black text-slate-800 tracking-tight">
               Welcome back, {userName}!
             </h2>
             <p className="font-sans text-sm md:text-base text-slate-600 max-w-lg leading-relaxed">
-              Your community energy is driving real change this week. Log new local actions or verify nearby reports to claim rewards.
+              Report problems on the map, verify your neighbors' reports, and fix what you can. Every point is awarded by the server for something you actually did.
             </p>
 
             <div className="relative space-y-3 pt-2">
@@ -167,6 +169,7 @@ export default function HomeView({
                 </span>
               </div>
             </div>
+            <p className="text-[11px] text-slate-500 font-semibold mt-2">{nextMilestone - points} to {nextMilestone.toLocaleString()}</p>
           </div>
         </div>
       </section>
@@ -205,99 +208,44 @@ export default function HomeView({
         )}
       </AnimatePresence>
 
-      {/* Active Initiatives Horizontal Slideshow */}
+      {/* Squads, with numbers counted from the database */}
       <section>
         <div className="flex justify-between items-end mb-6">
           <div>
-            <h3 className="font-sans text-xl font-black text-slate-800">Active Initiatives</h3>
-            <p className="font-sans text-xs text-slate-500 mt-1">Join local efforts happening right now.</p>
+            <h3 className="font-sans text-xl font-black text-slate-800">Squads near you</h3>
+            <p className="font-sans text-xs text-slate-500 mt-1">Each squad looks after a few kinds of problems in your area.</p>
           </div>
-          <button 
+          <button
             onClick={() => setView('squads')}
             className="text-blue-600 font-sans text-xs font-bold flex items-center gap-1 hover:opacity-80 transition-opacity cursor-pointer focus:outline-none"
           >
-            See All <span className="material-symbols-outlined text-sm align-middle">arrow_forward</span>
+            See all <span className="material-symbols-outlined text-sm align-middle">arrow_forward</span>
           </button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Initiative Card 1 */}
-          <div 
-            onClick={() => setView('squads')}
-            className="bg-white rounded-2xl p-4 cursor-pointer hover:-translate-y-1 transition-all border border-slate-100 shadow-sm flex flex-col justify-between"
-          >
-            <div>
-              <div className="h-40 rounded-xl overflow-hidden mb-4 relative">
-                <img 
-                  alt="River Cleanup" 
-                  className="w-full h-full object-cover" 
-                  referrerPolicy="no-referrer"
-                  src="https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=600"
-                />
-                <div className="absolute top-3 left-3 px-2.5 py-1 bg-white/90 backdrop-blur-md rounded-full font-sans text-[10px] font-bold text-slate-800 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">group</span> 24 Joined
+          {squads.map((sq) => (
+            <button
+              key={sq.id}
+              onClick={() => setView('squads')}
+              className="text-left bg-white rounded-2xl p-5 cursor-pointer hover:-translate-y-1 transition-all border border-slate-100 shadow-sm flex flex-col gap-3"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-blue-50 text-blue-600 border border-blue-100">
+                  <span className="material-symbols-outlined text-base">{sq.icon}</span>
+                </div>
+                <div>
+                  <h4 className="font-sans text-sm font-bold text-slate-800">{sq.name}</h4>
+                  <p className="text-[10px] font-bold text-slate-400">{sq.members} member{sq.members === 1 ? '' : 's'}{sq.joined ? ' · you joined' : ''}</p>
                 </div>
               </div>
-              <h4 className="font-sans text-sm font-bold text-slate-800 line-clamp-1">Downtown Park Revitalization</h4>
-              <p className="font-sans text-xs text-slate-500 mt-1.5 line-clamp-2 leading-relaxed">Help us plant over 200 new saplings and clear debris from the main walking trails.</p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-50 flex justify-between items-center text-[10px] font-bold text-blue-600 uppercase">
-              <span>Park Maintenance</span>
-              <span>Join Team</span>
-            </div>
-          </div>
-
-          {/* Initiative Card 2 */}
-          <div 
-            onClick={() => setView('squads')}
-            className="bg-white rounded-2xl p-4 cursor-pointer hover:-translate-y-1 transition-all border border-slate-100 shadow-sm flex flex-col justify-between"
-          >
-            <div>
-              <div className="h-40 rounded-xl overflow-hidden mb-4 relative">
-                <img 
-                  alt="Street repair" 
-                  className="w-full h-full object-cover" 
-                  referrerPolicy="no-referrer"
-                  src="https://images.unsplash.com/photo-1515162305285-0293e4767cc2?w=600"
-                />
-                <div className="absolute top-3 left-3 px-2.5 py-1 bg-white/90 backdrop-blur-md rounded-full font-sans text-[10px] font-bold text-slate-800 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">group</span> 42 Joined
-                </div>
+              <p className="font-sans text-xs text-slate-500 leading-relaxed">{sq.description}</p>
+              <div className="flex justify-between text-[10px] font-bold uppercase mt-auto pt-3 border-t border-slate-50">
+                <span className="text-red-500">{sq.openNearby} open near you</span>
+                <span className="text-teal-600">{sq.fixedByMembers} fixed</span>
               </div>
-              <h4 className="font-sans text-sm font-bold text-slate-800 line-clamp-1">Downtown Revitalization Squad</h4>
-              <p className="font-sans text-xs text-slate-500 mt-1.5 line-clamp-2 leading-relaxed">Painting designated eco-friendly crosswalks and auditing pothole hazards around central blocks.</p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-50 flex justify-between items-center text-[10px] font-bold text-blue-600 uppercase">
-              <span>Infrastructure</span>
-              <span>Join Team</span>
-            </div>
-          </div>
-
-          {/* Initiative Card 3 */}
-          <div 
-            onClick={() => setView('squads')}
-            className="bg-white rounded-2xl p-4 cursor-pointer hover:-translate-y-1 transition-all border border-slate-100 shadow-sm flex flex-col justify-between"
-          >
-            <div>
-              <div className="h-40 rounded-xl overflow-hidden mb-4 relative">
-                <img 
-                  alt="Recycling" 
-                  className="w-full h-full object-cover" 
-                  referrerPolicy="no-referrer"
-                  src="https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=600"
-                />
-                <div className="absolute top-3 left-3 px-2.5 py-1 bg-white/90 backdrop-blur-md rounded-full font-sans text-[10px] font-bold text-slate-800 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-[14px]">group</span> 12 Joined
-                </div>
-              </div>
-              <h4 className="font-sans text-sm font-bold text-slate-800 line-clamp-1">Riverside Trail Eco Cleanup</h4>
-              <p className="font-sans text-xs text-slate-500 mt-1.5 line-clamp-2 leading-relaxed">Clearing river trail plastic waste and setting up custom-built organic recycling bins.</p>
-            </div>
-            <div className="mt-4 pt-3 border-t border-slate-50 flex justify-between items-center text-[10px] font-bold text-blue-600 uppercase">
-              <span>Waste Management</span>
-              <span>Join Team</span>
-            </div>
-          </div>
+            </button>
+          ))}
         </div>
       </section>
 

@@ -1,11 +1,11 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { api } from '../lib/api';
+import { AppNotification } from '../types';
 
 interface HeaderProps {
   currentView: string;
   setView: (v: string) => void;
   userAvatar: string;
-  notificationCount: number;
-  clearNotifications: () => void;
   points: number;
   onLogout?: () => void;
   userRole?: string;
@@ -15,8 +15,6 @@ export default function Header({
   currentView,
   setView,
   userAvatar,
-  notificationCount,
-  clearNotifications,
   points,
   onLogout,
   userRole
@@ -24,11 +22,37 @@ export default function Header({
   const [showNotifications, setShowNotifications] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  const notifications = [
-    { id: 1, text: "🌟 12 potholes fixed this week!", time: "5 mins ago" },
-    { id: 2, text: "🎉 New park cleanup organized in Downtown.", time: "1 hr ago" },
-    { id: 3, text: "💡 Community garden proposal reached 500 votes.", time: "3 hrs ago" }
-  ];
+  // Neighbors' upvotes, verifications and fixes on your reports, checked every minute
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [unread, setUnread] = useState(0);
+  const loadNotifications = useCallback(() => {
+    api.getNotifications()
+      .then(({ items, unread }) => { setNotifications(items); setUnread(unread); })
+      .catch(() => {}); // the bell just stays as it was
+  }, []);
+
+  useEffect(() => {
+    loadNotifications();
+    const timer = setInterval(loadNotifications, 60_000);
+    return () => clearInterval(timer);
+  }, [loadNotifications]);
+
+  const toggleNotifications = () => {
+    const opening = !showNotifications;
+    setShowNotifications(opening);
+    if (opening && unread > 0) {
+      setUnread(0);
+      api.markNotificationsRead().catch(() => {});
+    }
+  };
+
+  const describe = (n: AppNotification) => {
+    const title = n.reportTitle ? `"${n.reportTitle}"` : 'your report';
+    if (n.type === 'upvote') return `${n.actorName} upvoted ${title}`;
+    if (n.type === 'verify') return `${n.actorName} verified ${title}`;
+    return `${n.actorName} fixed ${title} and proved it with a photo`;
+  };
+  const ICONS = { upvote: 'thumb_up', verify: 'verified', resolved: 'task_alt' } as const;
 
   return (
     <header className="fixed top-0 w-full z-50 bg-white/90 backdrop-blur-xl border-b border-slate-100 shadow-xs">
@@ -143,17 +167,17 @@ export default function Header({
 
           <div className="relative">
             <button 
-              onClick={() => {
-                setShowNotifications(!showNotifications);
-                if (notificationCount > 0) clearNotifications();
-              }}
+              onClick={toggleNotifications}
+              aria-label={unread > 0 ? `${unread} unread notifications` : 'Notifications'}
               className="text-blue-600 hover:opacity-80 transition-opacity p-2 hover:scale-110 duration-200 focus:outline-none cursor-pointer"
             >
               <span className="material-symbols-outlined align-middle" style={{ fontVariationSettings: "'FILL' 1" }}>
                 notifications
               </span>
-              {notificationCount > 0 && (
-                <span className="absolute top-1.5 right-1.5 w-2.5 h-2.5 bg-red-500 rounded-full border border-white shadow-sm animate-pulse"></span>
+              {unread > 0 && (
+                <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 bg-red-500 text-white text-[9px] font-black rounded-full border border-white flex items-center justify-center">
+                  {unread > 9 ? '9+' : unread}
+                </span>
               )}
             </button>
 
@@ -161,7 +185,7 @@ export default function Header({
             {showNotifications && (
               <div className="absolute right-0 mt-2 w-80 bg-white border border-slate-100 rounded-xl shadow-xl p-4 z-50">
                 <div className="flex justify-between items-center border-b border-slate-100 pb-2 mb-2">
-                  <span className="font-bold text-xs text-slate-800">Municipal Alerts</span>
+                  <span className="font-bold text-xs text-slate-800">Notifications</span>
                   <button 
                     onClick={() => setShowNotifications(false)}
                     className="text-[10px] text-blue-600 hover:underline cursor-pointer"
@@ -169,12 +193,24 @@ export default function Header({
                     Close
                   </button>
                 </div>
-                <div className="space-y-3">
+                <div className="space-y-3 max-h-80 overflow-y-auto">
+                  {notifications.length === 0 && (
+                    <p className="text-xs text-slate-500 py-2">
+                      Nothing yet. You'll hear here when neighbors upvote, verify or fix your reports.
+                    </p>
+                  )}
                   {notifications.map((notif) => (
-                    <div key={notif.id} className="text-xs border-b border-slate-50 pb-2 last:border-b-0 last:pb-0">
-                      <p className="text-slate-600 mb-1 font-sans">{notif.text}</p>
-                      <span className="text-[9px] text-slate-400 font-mono">{notif.time}</span>
-                    </div>
+                    <button
+                      key={notif.id}
+                      onClick={() => { setShowNotifications(false); setView('map'); }}
+                      className={`w-full text-left text-xs flex gap-2 border-b border-slate-50 pb-2 last:border-b-0 last:pb-0 cursor-pointer ${notif.read ? '' : 'font-semibold'}`}
+                    >
+                      <span className="material-symbols-outlined text-sm text-blue-600">{ICONS[notif.type]}</span>
+                      <span>
+                        <span className="block text-slate-600 mb-0.5">{describe(notif)}</span>
+                        <span className="text-[9px] text-slate-400 font-mono">{notif.timeAgo}</span>
+                      </span>
+                    </button>
                   ))}
                 </div>
               </div>

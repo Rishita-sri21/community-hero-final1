@@ -1,7 +1,6 @@
 import express from 'express';
 import { Type } from '@google/genai';
 import dotenv from 'dotenv';
-import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import User from './models/User';
 import jwt from 'jsonwebtoken';
@@ -14,10 +13,13 @@ import { centerForDistrict } from './src/shared/neighborhoods';
 import Report from './models/Report';
 import AuditLog from './models/AuditLog';
 import { CATEGORIES, URGENCIES, iconForCategory, isValidObjectId, listOpenReports, listStories, timeAgo, toPublicReport } from './services/reports';
-import { publish, streamEvents } from './services/events';
+import { listenerCount, publish, streamEvents } from './services/events';
+import Notification from './models/Notification';
 import mongoose from 'mongoose';
 import { getGenAI, GEMINI_MODEL, withTimeout, writeMissionBriefing } from './services/ai';
 import { planMission } from './services/missions';
+import { listSquads, userStats } from './services/squads';
+import { listNotifications, markAllRead, notifyReporter } from './services/notifications';
 import { neighborhoodAnalytics } from './services/analytics';
 import { findImage, imageErrorMessage, parseDataUrlImage, readStoredImage, saveDataUrlImage, storeImage } from './services/images';
 
@@ -51,7 +53,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
-type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_BACKUP';
+type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_EXPORT';
 
 // Records a security-relevant event in MongoDB. Never awaited by callers and never throws:
 // a failed log write must not fail the request that triggered it.
@@ -315,6 +317,45 @@ app.post('/api/users/leave-squad', protect, async (req: any, res) => {
   }
 });
 
+// Squads with member counts, open reports in their categories near the viewer, and fixes by members
+app.get('/api/squads', protect, async (req: any, res) => {
+  try {
+    res.json(await listSquads(req.user, centerForDistrict(req.user.district)));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load squads' });
+  }
+});
+
+app.get('/api/users/me/stats', protect, async (req: any, res) => {
+  try {
+    res.json(await userStats(req.user));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load your stats' });
+  }
+});
+
+// Upvotes, verifications and fixes on the user's own reports
+app.get('/api/notifications', protect, async (req: any, res) => {
+  try {
+    res.json(await listNotifications(req.user._id));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load notifications' });
+  }
+});
+
+app.post('/api/notifications/read', protect, async (req: any, res) => {
+  try {
+    await markAllRead(req.user._id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update notifications' });
+  }
+});
+
 // Liveness check for hosting platforms and uptime monitors
 // Used by the host's health check: unhealthy (503) while the database is unreachable
 app.get('/api/health', (req, res) => {
@@ -498,6 +539,7 @@ async function voteOnReport(req: any, res: any, kind: 'upvote' | 'verify') {
   if (kind === 'verify') {
     logAuditEvent('REPORT_VERIFIED', `Report ${report._id} verified by ${req.user.email}`, true, req.user.email, req.ip);
   }
+  notifyReporter(kind, report, req.user);
   const points = await awardPoints(userId, kind === 'upvote' ? POINTS.REPORT_UPVOTED : POINTS.REPORT_VERIFIED);
   const publicReport = toPublicReport(report, req.user);
   publish({ type: 'report.updated', report: publicReport });
@@ -672,6 +714,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
 
     logAuditEvent('REPORT_RESOLVED', `Report ${report._id} resolved by ${req.user.email}`, true, req.user.email, req.ip);
     publish({ type: 'report.resolved', id: String(report._id) });
+    notifyReporter('resolved', report, req.user);
     if (pointsForFix === 0) {
       const user = await User.findById(req.user._id).select('points').lean();
       return user?.points ?? 0;
@@ -796,27 +839,39 @@ app.get('/api/admin/db/status', async (req: any, res) => {
   }
 
   try {
-    const [usersCount, reportsCount, resolvedCount, auditLogsCount] = await Promise.all([
+    const db = mongoose.connection.db!;
+    // Round trip to the database, measured from this server
+    const pingStart = process.hrtime.bigint();
+    await db.admin().ping();
+    const pingMs = Number(process.hrtime.bigint() - pingStart) / 1e6;
+
+    const [build, stats, usersCount, openCount, resolvedCount, auditLogsCount, notificationsCount, lastExport] = await Promise.all([
+      db.admin().command({ buildInfo: 1 }).catch(() => null),
+      db.stats(),
       User.countDocuments(),
       Report.countDocuments({ status: 'open' }),
       Report.countDocuments({ status: 'resolved' }),
       AuditLog.countDocuments(),
+      Notification.countDocuments(),
+      AuditLog.findOne({ event: 'DB_EXPORT' }).sort({ timestamp: -1 }).lean(),
     ]);
 
     res.json({
-      status: 'Operational',
       engine: 'MongoDB',
-      metrics: {
-        usersCount,
-        reportsCount,
-        auditLogsCount,
-      },
-      files: [
-        { name: 'Users Collection', path: 'MongoDB: users', size: `${usersCount} documents` },
-        { name: 'Reports Collection', path: 'MongoDB: reports', size: `${reportsCount} open, ${resolvedCount} resolved` },
-        { name: 'Audit Log Collection', path: 'MongoDB: auditlogs', size: `${auditLogsCount} entries (kept 90 days)` },
+      version: build?.version ?? null,
+      pingMs: Math.round(pingMs * 10) / 10,
+      dataSizeBytes: stats.dataSize,
+      storageSizeBytes: stats.storageSize,
+      indexSizeBytes: stats.indexSize,
+      uptimeSeconds: Math.round(process.uptime()),
+      liveConnections: listenerCount(),
+      collections: [
+        { name: 'users', documents: usersCount, note: 'passwords hashed with bcrypt (cost 10)' },
+        { name: 'reports', documents: openCount + resolvedCount, note: `${openCount} open, ${resolvedCount} resolved; 2dsphere index` },
+        { name: 'auditlogs', documents: auditLogsCount, note: 'expire after 90 days' },
+        { name: 'notifications', documents: notificationsCount, note: 'expire after 60 days' },
       ],
-      lastBackup: new Date().toISOString(),
+      lastExport: lastExport ? { at: lastExport.timestamp, by: lastExport.userEmail, message: lastExport.message } : null,
     });
   } catch (err) {
     console.error(err);
@@ -824,22 +879,49 @@ app.get('/api/admin/db/status', async (req: any, res) => {
   }
 });
 
-// Secure endpoint: Trigger integrity backup check
-app.post('/api/admin/db/backup', (req: any, res) => {
+// Downloads a collection as NDJSON (one JSON document per line), streamed from a MongoDB
+// cursor so memory use stays flat however large the collection is. Passwords are never included.
+const EXPORTS: Record<string, { model: mongoose.Model<any>; select: string }> = {
+  reports: { model: Report, select: '' },
+  users: { model: User, select: '-password' },
+  auditlogs: { model: AuditLog, select: '' },
+};
+
+app.get('/api/admin/export/:collection', async (req: any, res) => {
   if (!req.user) {
     return res.status(401).json({ error: 'Unauthorized credentials session' });
   }
   if (req.user.role !== 'Organizer' && req.user.role !== 'Civil Servant') {
+    logAuditEvent('SECURITY_VIOLATION', `Forbidden data export attempt by ${req.user.email}`, false, req.user.email, req.ip);
     return res.status(403).json({ error: 'Forbidden: Requires elevated privileges.' });
   }
+  const target = EXPORTS[req.params.collection];
+  if (!target) {
+    return res.status(404).json({ error: 'Unknown collection' });
+  }
 
-  logAuditEvent('DB_BACKUP', `Database backup snapshot initialized by ${req.user.email}`, true, req.user.email, req.ip);
-  res.json({
-    success: true,
-    message: 'Local Database snapshot backed up successfully!',
-    timestamp: new Date().toISOString(),
-    checksum: crypto.randomBytes(16).toString('hex'),
+  const date = new Date().toISOString().slice(0, 10);
+  res.set({
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Content-Disposition': `attachment; filename="community-hero-${req.params.collection}-${date}.ndjson"`,
   });
+
+  let count = 0;
+  try {
+    const cursor = target.model.find().select(target.select).lean().cursor();
+    for await (const doc of cursor) {
+      // Respect backpressure: wait for the socket to drain before writing more
+      if (!res.write(JSON.stringify(doc) + '\n')) {
+        await new Promise((resolve) => res.once('drain', resolve));
+      }
+      count++;
+    }
+    res.end();
+    logAuditEvent('DB_EXPORT', `Exported ${count} ${req.params.collection} documents`, true, req.user.email, req.ip);
+  } catch (err) {
+    console.error('Export failed:', err);
+    res.destroy(err as Error); // a cut-off download is better than a file that looks complete
+  }
 });
 
 export default app;

@@ -75,10 +75,44 @@ export const REWARDS: RewardItem[] = [
   },
 ];
 
+export interface SquadDefinition {
+  id: string;
+  name: string;
+  description: string;
+  // Report categories this squad looks after
+  categories: string[];
+  icon: string;
+  joinPoints: number;
+}
+
+// Squads are standing teams, each focused on a few report categories. Their member counts,
+// nearby open reports and fixes are computed from the database (services/squads.ts).
+export const SQUADS: SquadDefinition[] = [
+  {
+    id: 'sq-1',
+    name: 'Road Safety Squad',
+    description: 'Finds, verifies and follows up on potholes and broken streetlights.',
+    categories: ['Pothole', 'Streetlight'],
+    icon: 'add_road',
+    joinPoints: 30,
+  },
+  {
+    id: 'sq-2',
+    name: 'Green Spaces Squad',
+    description: 'Looks after parks, benches, trees and leaking water fixtures.',
+    categories: ['Park Maintenance', 'Water Leakage'],
+    icon: 'park',
+    joinPoints: 30,
+  },
+  {
+    id: 'sq-3',
+    name: 'Clean Streets Squad',
+    description: 'Tackles overflowing bins, dumped waste and graffiti.',
+    categories: ['Waste Management', 'Graffiti'],
+    icon: 'cleaning_services',
+    joinPoints: 30,
+  },
+];
+
 // Joining a squad earns points the first time only; leaving and re-joining earns nothing
-export const SQUAD_JOIN_POINTS: Record<string, number> = {
-  'sq-featured': 50,
-  'sq-1': 30,
-  'sq-2': 30,
-  'sq-3': 30,
-};
+export const SQUAD_JOIN_POINTS: Record<string, number> = Object.fromEntries(SQUADS.map((s) => [s.id, s.joinPoints]));

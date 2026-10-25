@@ -1,4 +1,4 @@
-import { Mission, NeighborhoodAnalytics, Report, Story } from '../types';
+import { AppNotification, Mission, NeighborhoodAnalytics, Report, Squad, Story, UserStats } from '../types';
 import { API_URL } from '../config';
 
 export interface ChatMessage {
@@ -208,7 +208,37 @@ export const api = {
     return request<any>('/api/admin/db/status', {}, 'Failed to retrieve database status');
   },
 
-  triggerDbBackup() {
-    return post<any>('/api/admin/db/backup', {}, 'Failed to trigger database backup');
+  // Downloads a collection as an .ndjson file (one JSON document per line)
+  async exportCollection(collection: 'reports' | 'users' | 'auditlogs') {
+    const res = await apiFetch(`/api/admin/export/${collection}`, { headers: makeHeaders() });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || 'Export failed');
+    }
+    const blob = await res.blob();
+    const filename = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '')?.[1] || `${collection}.ndjson`;
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+    return { bytes: blob.size, lines: (await blob.text()).split('\n').filter(Boolean).length };
+  },
+
+  getSquads() {
+    return request<Squad[]>('/api/squads', {}, 'Failed to load squads');
+  },
+
+  getMyStats() {
+    return request<UserStats>('/api/users/me/stats', {}, 'Failed to load your stats');
+  },
+
+  getNotifications() {
+    return request<{ unread: number; items: AppNotification[] }>('/api/notifications', {}, 'Failed to load notifications');
+  },
+
+  markNotificationsRead() {
+    return post<{ success: boolean }>('/api/notifications/read', {}, 'Failed to update notifications');
   },
 };

@@ -28,39 +28,11 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<{ _id: string; name: string; email: string; points: number; avatar: string; joinedSquads?: string[]; district?: string; role?: string } | null>(null);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
 
-  // Initialize Squads list
-  const [squads, setSquads] = useState<Squad[]>([
-    {
-      id: 'sq-1',
-      name: 'Downtown Revitalization Squad',
-      description: 'Painting designated eco-friendly crosswalks and auditing pothole hazards around central blocks.',
-      volunteersCount: 42,
-      volunteersMax: 50,
-      distance: '0.2 miles',
-      category: 'road',
-      icon: 'paint',
-    },
-    {
-      id: 'sq-2',
-      name: 'Centennial Park Greening',
-      description: 'Help us plant native wildflowers and set up a new community compost system.',
-      volunteersCount: 15,
-      volunteersMax: 30,
-      distance: '1.5 miles',
-      category: 'park',
-      icon: 'nature_people',
-    },
-    {
-      id: 'sq-3',
-      name: 'Riverside Trail Cleanup',
-      description: 'Clearing waste along the banks of the river to protect local bird habitats.',
-      volunteersCount: 8,
-      volunteersMax: 20,
-      distance: '2.1 miles',
-      category: 'cleanup',
-      icon: 'cleaning',
-    },
-  ]);
+  // Squads with member counts and nearby work, from the server
+  const [squads, setSquads] = useState<Squad[]>([]);
+  const refreshSquads = () => {
+    api.getSquads().then(setSquads).catch((err) => console.warn('Could not load squads', err));
+  };
 
   // Check active user session on startup
   useEffect(() => {
@@ -78,6 +50,10 @@ export default function App() {
     };
     checkSession();
   }, []);
+
+  useEffect(() => {
+    if (currentUser?.district) refreshSquads();
+  }, [currentUser?._id, currentUser?.district, currentUser?.joinedSquads?.length]);
 
   // Leaderboard comes from the server (ranked by real points in MongoDB)
   const [leaderboard, setLeaderboard] = useState<Citizen[]>([]);
@@ -190,8 +166,6 @@ export default function App() {
         currentView={view} 
         setView={handleNavClick} 
         userAvatar={currentUser.avatar || "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=150"}
-        notificationCount={3}
-        clearNotifications={() => {}}
         onLogout={handleLogout}
         userRole={currentUser?.role}
       />
@@ -234,8 +208,8 @@ export default function App() {
             {view === 'squads' && (
               <SquadsView 
                 squads={squads}
-                setSquads={setSquads}
                 leaderboard={leaderboard}
+                user={{ name: currentUser.name, avatar: currentUser.avatar }}
                 setPoints={setPoints}
                 joinedSquadIds={currentUser.joinedSquads || []}
                 onJoinedSquadsChange={(ids) => setCurrentUser(u => (u ? { ...u, joinedSquads: ids } : u))}
