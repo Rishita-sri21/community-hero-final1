@@ -13,19 +13,39 @@ import { POINTS, MAX_REWARDED_REPORTS_PER_DAY } from './src/shared/catalog';
 import Report from './models/Report';
 import AuditLog from './models/AuditLog';
 import { CATEGORIES, URGENCIES, iconForCategory, isValidObjectId, listOpenReports, toPublicReport } from './services/reports';
+import { publish, streamEvents } from './services/events';
+import mongoose from 'mongoose';
 import { findImage, imageErrorMessage, parseDataUrlImage, readStoredImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
-app.use(cors({
-  origin: '*',
-}));
 
-// Set up large payload body parsing for base64 image uploads
-app.use(express.json({ limit: '15mb' }));
-app.use(express.urlencoded({ limit: '15mb', extended: true }));
+// Render, Vercel and most hosts put a proxy in front of the app. Trusting one proxy hop makes
+// req.ip the visitor's address instead of the proxy's, so the login rate limit is per visitor
+// rather than one shared limit for everybody.
+app.set('trust proxy', 1);
+
+// CORS_ORIGINS (comma-separated, e.g. https://my-app.vercel.app) limits which sites may call
+// the API from a browser. Unset, any site may, which is fine for local development.
+const allowedOrigins = (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+app.use(cors({ origin: allowedOrigins.length > 0 ? allowedOrigins : '*' }));
+
+// Basic security headers for every response
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Strict-Transport-Security': 'max-age=15552000; includeSubDomains',
+  });
+  next();
+});
+
+// Photos arrive as base64 inside JSON: a 3 MB photo is about 4 MB of text
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
 type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_BACKUP';
 
@@ -41,6 +61,14 @@ function logAuditEvent(event: AuditEvent, message: string, success: boolean, use
 const authAttempts: Record<string, { count: number; lastAttempt: number }> = {};
 const RATE_LIMIT_MAX = 8;
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute window
+
+// Forget addresses whose window has passed, so the table can't grow forever
+setInterval(() => {
+  const now = Date.now();
+  for (const ip of Object.keys(authAttempts)) {
+    if (now - authAttempts[ip].lastAttempt > RATE_LIMIT_WINDOW) delete authAttempts[ip];
+  }
+}, RATE_LIMIT_WINDOW).unref();
 
 function rateLimitAuth(req: any, res: any, next: any) {
   const rawIp = req.ip || req.headers['x-forwarded-for'] || '127.0.0.1';
@@ -309,8 +337,15 @@ app.post('/api/users/leave-squad', protect, async (req: any, res) => {
 });
 
 // Liveness check for hosting platforms and uptime monitors
+// Used by the host's health check: unhealthy (503) while the database is unreachable
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' });
+  const database = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+  res.status(database === 'connected' ? 200 : 503).json({ status: database === 'connected' ? 'ok' : 'degraded', database });
+});
+
+// Live updates: new reports, vote counts and resolutions, as Server-Sent Events
+app.get('/api/events', (req, res) => {
+  streamEvents(res);
 });
 
 function startOfToday() {
@@ -445,7 +480,9 @@ app.post('/api/reports', protect, async (req: any, res) => {
     updatedPoints = await awardPoints(userId, POINTS.REPORT_CREATED);
   }
 
-  res.status(201).json({ report: toPublicReport(report, req.user), points: updatedPoints });
+  const publicReport = toPublicReport(report, req.user);
+  publish({ type: 'report.created', report: publicReport });
+  res.status(201).json({ report: publicReport, points: updatedPoints });
 });
 
 // Upvote and verify share their rules: once per person, never on your own report.
@@ -480,7 +517,9 @@ async function voteOnReport(req: any, res: any, kind: 'upvote' | 'verify') {
     logAuditEvent('REPORT_VERIFIED', `Report ${report._id} verified by ${req.user.email}`, true, req.user.email, req.ip);
   }
   const points = await awardPoints(userId, kind === 'upvote' ? POINTS.REPORT_UPVOTED : POINTS.REPORT_VERIFIED);
-  res.json({ report: toPublicReport(report, req.user), points });
+  const publicReport = toPublicReport(report, req.user);
+  publish({ type: 'report.updated', report: publicReport });
+  res.json({ report: publicReport, points });
 }
 
 app.post('/api/reports/:id/upvote', protect, (req, res) => voteOnReport(req, res, 'upvote'));
@@ -769,6 +808,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
     await Report.updateOne({ _id: report._id }, { $set: { 'resolution.image': photoUrl } });
 
     logAuditEvent('REPORT_RESOLVED', `Report ${report._id} resolved by ${req.user.email}`, true, req.user.email, req.ip);
+    publish({ type: 'report.resolved', id: String(report._id) });
     return awardPoints(req.user._id, POINTS.REPORT_RESOLVED);
   };
 

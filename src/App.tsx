@@ -13,6 +13,7 @@ import { Report, Squad, Citizen, Transformation } from './types';
 import { api } from './lib/api';
 import { toast, errorMessage } from './lib/toast';
 import { centerForDistrict } from './shared/neighborhoods';
+import { useLiveReports } from './hooks/useLiveReports';
 
 export default function App() {
   const [view, setView] = useState<string>('home');
@@ -147,6 +148,13 @@ export default function App() {
     fetchReports();
   }, [currentUser?._id, currentUser?.district]);
 
+  // Other people's new reports, votes and fixes arrive live. After a dropped connection
+  // comes back, reload quietly in case something was missed while offline.
+  const reportsCenter = centerForDistrict(currentUser?.district);
+  const liveConnected = useLiveReports(!!currentUser, reportsCenter, setReports, () => {
+    api.getReports(reportsCenter).then(setReports).catch(() => {});
+  });
+
   const handleNavClick = (targetView: string) => {
     if (targetView.includes(':')) {
       const [main, sub] = targetView.split(':');
@@ -252,6 +260,7 @@ export default function App() {
                 innerTab={mapTab}
                 setInnerTab={setMapTab}
                 userDistrict={currentUser?.district}
+                liveConnected={liveConnected}
               />
             )}
 

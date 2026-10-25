@@ -11,7 +11,8 @@ export function useReportActions(
   setPoints: (total: number) => void
 ) {
   const applyResult = ({ report, points }: ReportActionResponse) => {
-    setReports((prev) => prev.map((r) => (r.id === report.id ? report : r)));
+    // The response has no distance (it depends on where the list was loaded from), so keep ours
+    setReports((prev) => prev.map((r) => (r.id === report.id ? { ...report, distanceKm: r.distanceKm } : r)));
     if (points !== null) setPoints(points);
   };
 

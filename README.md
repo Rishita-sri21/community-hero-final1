@@ -8,6 +8,7 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **Your neighborhood first:** the map opens on the neighborhood you picked at sign-up, and reports are sorted by distance from it.
 - **AI triage:** Google Gemini suggests a category and urgency for each new report.
 - **Photo-verified resolution:** capture or upload a photo of the fix; Gemini Vision compares it with the reporter's "before" photo (when there is one) and judges whether the issue is resolved. Resolved reports are kept with their fix photo.
+- **Live updates:** new reports, vote counts and resolutions appear for everyone as they happen, over Server-Sent Events.
 - **Civic assistant:** a chat widget that knows the app and the current reports in your area.
 - **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
 - **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with audit logs.
@@ -21,7 +22,8 @@ Browser (React SPA, src/)
 Express API (app.ts, started by server.ts)
    ├── MongoDB via Mongoose ─ users, reports (2dsphere geo index), audit logs
    ├── MongoDB GridFS ─────── report and fix photos, served at /api/images/:id
-   └── Google Gemini ──────── categorization, chat, photo verification (optional)
+   ├── Google Gemini ──────── categorization, chat, photo verification (optional)
+   └── GET /api/events ────── live updates pushed to every open browser (Server-Sent Events)
 ```
 
 In development, `server.ts` runs Vite in middleware mode, so one process on port 3000 serves both the API and the hot-reloading frontend. In production it serves the prebuilt `dist/` folder.
@@ -49,6 +51,7 @@ On first start the server creates three example reports in New York and four dem
 | `GEMINI_API_KEY` | no | Enables AI features; without it they use offline fallbacks |
 | `VITE_API_URL` | no | API base URL for the frontend; defaults to same-origin in dev and the deployed backend in production builds |
 | `PORT` | no | Server port, default `3000` |
+| `CORS_ORIGINS` | no | Comma-separated sites allowed to call the API from a browser (e.g. your Vercel URL); unset allows any |
 | `SIMULATE_AI_VERIFICATION` | no | Demo only: accept resolution photos without Gemini |
 
 ## Scripts
@@ -62,6 +65,15 @@ On first start the server creates three example reports in New York and four dem
 | `npm start` | Start the server (set `NODE_ENV=production` to serve `dist/`) |
 
 CI runs type-check, tests and build on every pull request.
+
+## Deploying
+
+The backend runs on any Node host (it's deployed on Render); the frontend can be served by the same server or by a static host such as Vercel, with `VITE_API_URL` pointing at the backend.
+
+- Set `MONGODB_URI`, `JWT_SECRET` and, for real photo checks, `GEMINI_API_KEY`. Set `CORS_ORIGINS` to the frontend's URL.
+- Point the host's health check at `/api/health`. It returns 503 while MongoDB is unreachable, so the host can hold traffic or restart the server.
+- The server trusts one proxy hop (`trust proxy`), which is right for Render, Railway, Fly and similar hosts. Without it, every visitor would share a single login rate limit.
+- On `SIGTERM` the server stops accepting connections and closes MongoDB cleanly, so deploys don't cut requests off mid-write.
 
 ## Points rules
 
@@ -93,7 +105,8 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `GET` | `/api/leaderboard` | public |
 | `POST` | `/api/assistant/chat` | public |
 | `GET/POST` | `/api/admin/*` | Civil Servant or Organizer |
-| `GET` | `/api/health` | public |
+| `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`) |
+| `GET` | `/api/health` | public (503 while the database is unreachable) |
 
 ## Known limitations
 
@@ -102,4 +115,4 @@ This project is being upgraded in stages. Current known gaps:
 - Green actions are self-reported, so they're limited to once per action per day rather than proven.
 - Missions, notifications and analytics are front-end demos without server persistence.
 - Accounts whose district isn't one of the onboarding neighborhoods (older accounts, and demo accounts created before this change) see the map centered on New York, and there's no screen yet to change your neighborhood.
-- New reports and votes appear for other people after a refresh; live updates are planned.
+- Live updates go through the server's memory, so they reach everyone only while the backend runs as a single instance. Scaling out would need a shared channel such as MongoDB change streams.
