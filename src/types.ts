@@ -52,14 +52,57 @@ export interface Citizen {
   isCurrentUser?: boolean;
 }
 
-export interface Transformation {
+// A resolved report with its fix photo (GET /api/stories)
+export interface Story {
   id: string;
   title: string;
-  description: string;
-  beforeImage: string;
-  afterImage: string;
   category: string;
-  heroesAvatars: string[];
-  reportedBy?: string;
-  heroesCount: number;
+  district: string;
+  details: string;
+  beforeImage?: string;
+  afterImage: string;
+  reportedBy: { name: string; avatar?: string };
+  resolvedBy: { name: string; avatar?: string };
+  reportedAt: string;
+  resolvedAt: string;
+  hoursToResolve: number;
+}
+
+// A walking route through high-priority open reports, planned by the server (services/missions.ts)
+export interface MissionStop {
+  reportId: string;
+  title: string;
+  category: string;
+  urgency: string;
+  lat: number;
+  lng: number;
+  score: number;
+  reasons: string[];
+  legKm: number;
+}
+
+export interface Mission {
+  title: string;
+  briefing: string;
+  briefingSource: 'gemini' | 'template';
+  start: { lat: number; lng: number };
+  stops: MissionStop[];
+  totalKm: number;
+  estimatedMinutes: number;
+  totalScore: number;
+  consideredReports: number;
+  clusters: number;
+}
+
+// Neighborhood statistics computed by MongoDB (services/analytics.ts)
+export interface NeighborhoodAnalytics {
+  radiusKm: number;
+  open: number;
+  resolved: number;
+  resolutionRate: number | null;
+  medianHoursToResolve: number | null;
+  averageHoursToResolve: number | null;
+  last7Days: { date: string; reported: number; resolved: number }[];
+  byCategory: { category: string; open: number; resolved: number }[];
+  byUrgency: { urgency: string; open: number }[];
 }

@@ -131,22 +131,33 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
       expect(list.body.some((r: any) => r.id === reportId)).toBe(true);
     });
 
-    it('in demo mode, resolves once and never your own report', async () => {
+    it('in demo mode, pays the fixer once', async () => {
       process.env.SIMULATE_AI_VERIFICATION = 'true';
       const reporter = await createUser('Io');
       const fixer = await createUser('Jo');
       const reportId = (await createReport(reporter.token)).body.report.id;
 
-      const own = await request(app).post('/api/reports/resolve').set(auth(reporter.token)).send({ reportId, image: photo });
-      expect(own.status).toBe(403);
-
       const res = await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId, image: photo });
       expect(res.status).toBe(200);
+      expect(res.body.heroPointsAwarded).toBe(POINTS.REPORT_RESOLVED);
       expect(res.body.userSession.points).toBe(POINTS.REPORT_RESOLVED);
 
       const again = await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId, image: photo });
       expect(again.status).toBe(404);
       expect(await pointsOf(fixer.user)).toBe(POINTS.REPORT_RESOLVED);
+    });
+
+    it('lets reporters close their own report, without points', async () => {
+      process.env.SIMULATE_AI_VERIFICATION = 'true';
+      const reporter = await createUser('Ki');
+      const reportId = (await createReport(reporter.token)).body.report.id;
+      const before = await pointsOf(reporter.user);
+
+      const res = await request(app).post('/api/reports/resolve').set(auth(reporter.token)).send({ reportId, image: photo });
+      expect(res.status).toBe(200);
+      expect(res.body.heroPointsAwarded).toBe(0);
+      expect(res.body.userSession.points).toBe(before);
+      expect(await pointsOf(reporter.user)).toBe(before);
     });
   });
 

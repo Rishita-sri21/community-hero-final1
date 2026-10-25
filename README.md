@@ -9,7 +9,10 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **AI triage:** Google Gemini suggests a category and urgency for each new report.
 - **Photo-verified resolution:** capture or upload a photo of the fix; Gemini Vision compares it with the reporter's "before" photo (when there is one) and judges whether the issue is resolved. Resolved reports are kept with their fix photo.
 - **Live updates:** new reports, vote counts and resolutions appear for everyone as they happen, over Server-Sent Events.
-- **Civic assistant:** a chat widget that knows the app and the current reports in your area.
+- **Mission planner:** scores open reports by urgency, community support and age, groups nearby ones (union-find clustering), picks the most valuable group within reach and orders its stops into a short walking route (nearest neighbor plus 2-opt and relocate moves), drawn on the map. Gemini, when configured, only phrases the briefing from those numbers.
+- **Neighborhood analytics:** open and resolved counts, resolution rate, median and average time to fix, a 7-day reported/resolved chart and a per-category breakdown, computed by a single MongoDB aggregation (`$geoNear` + `$facet`).
+- **Before and after stories:** every resolved report with its fix photo, next to the reporter's original photo.
+- **Civic assistant:** a Gemini chat that is given the app's rules and the open reports nearest the user, looked up by the server. Without a Gemini key it says it's unavailable rather than answering with canned text.
 - **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
 - **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with audit logs.
 
@@ -84,7 +87,7 @@ The browser never tells the server how many points to add. Each rule lives in `s
 | Post a report | +20 | first 10 reports per day |
 | Upvote a report | +5 | once per report, not your own |
 | Verify a report | +15 | once per report, not your own |
-| Resolve a report with a verified photo | +150 | not your own report |
+| Resolve a report with a verified photo | +150 | 0 when closing your own report |
 | Log a green action | +10 to +25 | each action once per day |
 | Join a squad | +30 / +50 | first join only |
 | Redeem a reward | catalogue price | only with enough balance |
@@ -103,7 +106,10 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `POST` | `/api/actions/green`, `/api/rewards/redeem` | required |
 | `POST` | `/api/users/update-district`, `/join-squad`, `/leave-squad` | required |
 | `GET` | `/api/leaderboard` | public |
-| `POST` | `/api/assistant/chat` | public |
+| `POST` | `/api/assistant/chat` | required (503 without a Gemini key) |
+| `GET` | `/api/missions/plan?lat=&lng=` | required |
+| `GET` | `/api/analytics?lat=&lng=` | public |
+| `GET` | `/api/stories` | public |
 | `GET/POST` | `/api/admin/*` | Civil Servant or Organizer |
 | `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`) |
 | `GET` | `/api/health` | public (503 while the database is unreachable) |
@@ -113,6 +119,7 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 This project is being upgraded in stages. Current known gaps:
 
 - Green actions are self-reported, so they're limited to once per action per day rather than proven.
-- Missions, notifications and analytics are front-end demos without server persistence.
+- Squads, notifications and the admin "backup" button are still front-end demos; they're next in line.
+- Mission distances are straight lines between stops; walking time adds 30% for streets. A routing engine (for example OSRM) would give real street paths.
 - Accounts whose district isn't one of the onboarding neighborhoods (older accounts, and demo accounts created before this change) see the map centered on New York, and there's no screen yet to change your neighborhood.
 - Live updates go through the server's memory, so they reach everyone only while the backend runs as a single instance. Scaling out would need a shared channel such as MongoDB change streams.

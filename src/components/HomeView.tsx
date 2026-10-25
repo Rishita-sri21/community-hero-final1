@@ -376,15 +376,14 @@ export default function HomeView({
                     <span className="material-symbols-outlined text-[12px]">verified</span>
                     <span>{rep.hasVerified ? 'You verified' : rep.verified ? 'Verified · Confirm' : 'Verify Match'}</span>
                   </button>
-                  {!rep.isMine && (
                   <button 
                     onClick={() => setResolvingReport(rep)}
+                    title={rep.isMine ? 'Close your own report with a photo of the fix (no points)' : undefined}
                     className="px-3 py-1.5 bg-indigo-600 text-white rounded-full text-[10px] font-bold hover:bg-indigo-700 transition-all flex items-center gap-1 cursor-pointer focus:outline-none"
                   >
                     <span className="material-symbols-outlined text-[12px]">photo_camera</span>
-                    <span>Resolve</span>
+                    <span>{rep.isMine ? 'Mark fixed' : 'Resolve'}</span>
                   </button>
-                  )}
                 </div>
               </div>
             </div>

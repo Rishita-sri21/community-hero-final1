@@ -9,7 +9,7 @@ import { OnboardingLocationSetup } from './components/OnboardingLocationSetup';
 import AdminConsole from './components/AdminConsole';
 import AIAssistantWidget from './components/AIAssistantWidget';
 import Toaster from './components/Toaster';
-import { Report, Squad, Citizen, Transformation } from './types';
+import { Report, Squad, Citizen } from './types';
 import { api } from './lib/api';
 import { toast, errorMessage } from './lib/toast';
 import { centerForDistrict } from './shared/neighborhoods';
@@ -96,39 +96,6 @@ export default function App() {
       })
       .catch((err) => console.warn('Could not load leaderboard', err));
   }, [currentUser, view, points]);
-
-  // Initialize transformations success stories
-  const [transformations] = useState<Transformation[]>([
-    {
-      id: 'trf-1',
-      title: 'Historic District Crosswalk Painting',
-      description: 'The Downtown Revitalization Squad repainted faded, dangerous crosswalks with high-contrast, eco-friendly paint. Pedestrian safety index surged by 12%!',
-      beforeImage: 'https://images.unsplash.com/photo-1515162305285-0293e4767cc2?w=600',
-      afterImage: 'https://images.unsplash.com/photo-1494145904049-0dca59b4bbad?w=600',
-      category: 'Road Infrastructure',
-      heroesAvatars: [
-        'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
-        'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150',
-        'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
-      ],
-      reportedBy: 'Elena M. and 4 others',
-      heroesCount: 5,
-    },
-    {
-      id: 'trf-2',
-      title: 'Centennial Park Compost Launch',
-      description: 'We organized a park workshop to install three large-capacity composting bins. Over 200kg of organic waste diverted from landfills so far!',
-      beforeImage: 'https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=600',
-      afterImage: 'https://images.unsplash.com/photo-1416879595882-3373a0480b5b?w=600',
-      category: 'Waste & Recycling',
-      heroesAvatars: [
-        'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150',
-        'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150'
-      ],
-      reportedBy: 'Samira K. and 2 others',
-      heroesCount: 3,
-    }
-  ]);
 
   // Load reports, nearest to the user's neighborhood first
   useEffect(() => {
@@ -269,7 +236,6 @@ export default function App() {
                 squads={squads}
                 setSquads={setSquads}
                 leaderboard={leaderboard}
-                transformations={transformations}
                 setPoints={setPoints}
                 joinedSquadIds={currentUser.joinedSquads || []}
                 onJoinedSquadsChange={(ids) => setCurrentUser(u => (u ? { ...u, joinedSquads: ids } : u))}
@@ -297,13 +263,13 @@ export default function App() {
         <div className="max-w-[1200px] mx-auto px-4 flex flex-col sm:flex-row justify-between items-center gap-4 text-xs font-semibold text-slate-400">
           <p>© 2026 Community Hero Inc. Dedicated to green, safe, connected municipal spaces.</p>
           <p className="font-mono text-[10px] bg-slate-50 border border-slate-100 px-3 py-1 rounded-full text-slate-500">
-            Node-Engine &amp; Gemini 3.5 Fully Operational
+            {liveConnected ? 'Connected to live updates' : 'Reconnecting to live updates…'}
           </p>
         </div>
       </footer>
 
       {/* High-Fidelity Floating AI Assistant Engine */}
-      <AIAssistantWidget userDistrict={currentUser?.district} activeReports={reports} />
+      <AIAssistantWidget userDistrict={currentUser?.district} />
 
       <Toaster />
 

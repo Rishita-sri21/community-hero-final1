@@ -138,3 +138,43 @@ export async function seedDemoReports() {
     },
   ]);
 }
+
+export interface Story {
+  id: string;
+  title: string;
+  category: string;
+  district: string;
+  details: string;
+  beforeImage?: string;
+  afterImage: string;
+  reportedBy: { name: string; avatar?: string };
+  resolvedBy: { name: string; avatar?: string };
+  reportedAt: string;
+  resolvedAt: string;
+  hoursToResolve: number;
+}
+
+/** Recently resolved reports with their fix photo, for the "before and after" stories page. */
+export async function listStories(limit = 12): Promise<Story[]> {
+  const rows = await Report.aggregate([
+    { $match: { status: 'resolved', 'resolution.image': { $exists: true } } },
+    { $sort: { 'resolution.at': -1 } },
+    { $limit: limit },
+    { $lookup: { from: 'users', localField: 'resolution.by', foreignField: '_id', as: 'resolver', pipeline: [{ $project: { name: 1, avatar: 1 } }] } },
+  ]);
+
+  return rows.map((r: any) => ({
+    id: String(r._id),
+    title: r.title,
+    category: r.category,
+    district: r.district,
+    details: r.resolution.details || '',
+    beforeImage: r.image || undefined,
+    afterImage: r.resolution.image,
+    reportedBy: { name: r.reporter?.name || 'Neighbor', avatar: r.reporter?.avatar },
+    resolvedBy: { name: r.resolver[0]?.name || 'Neighbor', avatar: r.resolver[0]?.avatar },
+    reportedAt: r.createdAt.toISOString(),
+    resolvedAt: r.resolution.at.toISOString(),
+    hoursToResolve: Math.round(((r.resolution.at - r.createdAt) / 3_600_000) * 10) / 10,
+  }));
+}

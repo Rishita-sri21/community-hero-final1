@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Squad, Citizen, Transformation } from '../types';
+import { Squad, Citizen, Story } from '../types';
+import { assetUrl } from '../config';
 import { api } from '../lib/api';
 import { toast, errorMessage } from '../lib/toast';
 
@@ -8,7 +9,6 @@ interface SquadsViewProps {
   squads: Squad[];
   setSquads: React.Dispatch<React.SetStateAction<Squad[]>>;
   leaderboard: Citizen[];
-  transformations: Transformation[];
   setPoints: (total: number) => void;
   // Squads the user has joined, as stored on the server
   joinedSquadIds: string[];
@@ -21,7 +21,6 @@ export default function SquadsView({
   squads,
   setSquads,
   leaderboard,
-  transformations,
   setPoints,
   joinedSquadIds,
   onJoinedSquadsChange,
@@ -34,18 +33,19 @@ export default function SquadsView({
   const activeSquadJoined = joinedSquadIds.includes(FEATURED_SQUAD_ID);
   const [pendingSquadId, setPendingSquadId] = useState<string | null>(null);
   
-  // High-five tracking counts
-  const [highFives, setHighFives] = useState<Record<string, number>>({
-    'Elena M.': 4,
-    'Marcus T.': 2,
-    'Samira K.': 0
-  });
+  // Resolved reports with before and after photos, loaded when the stories tab opens
+  const [stories, setStories] = useState<Story[] | null>(null);
+  const [storyToggle, setStoryToggle] = useState<Record<string, 'after' | 'before'>>({});
 
-  // Story before-after toggle states (active side-by-side vs layered)
-  const [storyToggle, setStoryToggle] = useState<Record<string, 'after' | 'before'>>({
-    'trf-1': 'after',
-    'trf-2': 'after'
-  });
+  useEffect(() => {
+    if (innerTab !== 'stories') return;
+    api.getStories()
+      .then(setStories)
+      .catch((err) => {
+        toast.error(errorMessage(err, 'Could not load stories.'));
+        setStories([]);
+      });
+  }, [innerTab]);
 
   // Join or leave a squad on the server. The join bonus is paid only the first time;
   // leaving never costs points, and re-joining never pays again.
@@ -75,13 +75,6 @@ export default function SquadsView({
 
   const handleActiveSquadToggle = () => toggleSquad(FEATURED_SQUAD_ID);
   const handleJoinSquad = (id: string) => toggleSquad(id);
-
-  const sendHighFive = (name: string) => {
-    setHighFives(prev => ({
-      ...prev,
-      [name]: prev[name] + 1
-    }));
-  };
 
   return (
     <div className="space-y-12 animate-entrance max-w-[1200px] mx-auto px-4 py-6">
@@ -348,208 +341,103 @@ export default function SquadsView({
         </>
       )}
 
-      {/* -------------------- TAB 2: IMPACT HALL OF FAME (SUCCESS STORIES) -------------------- */}
+      {/* -------------------- TAB 2: BEFORE & AFTER STORIES -------------------- */}
       {innerTab === 'stories' && (
         <div className="space-y-12">
-          
-          {/* Local Positivity Vibe Check meter */}
-          <div className="bg-white rounded-2xl p-6 max-w-sm mx-auto flex flex-col items-center gap-4 text-center border border-slate-100 shadow-sm">
-            <span className="font-sans text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-              Local Positivity Vibe Check
-            </span>
-            <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden relative shadow-inner">
-              <div className="absolute top-0 left-0 h-full bg-gradient-to-r from-blue-600 to-teal-500 rounded-full" style={{ width: '85%' }}></div>
-            </div>
-            <div className="flex justify-between w-full text-[10px] text-slate-400 font-sans font-bold">
-              <span>Needs Love</span>
-              <span className="text-teal-600">Thriving!</span>
-            </div>
-          </div>
-
-          {/* Transformations Showcase */}
           <section className="space-y-6">
             <div className="flex justify-between items-end border-b border-slate-100 pb-3">
-              <h2 className="font-sans text-lg font-black text-slate-800">Recent Transformations</h2>
+              <h2 className="font-sans text-lg font-black text-slate-800">Recently fixed</h2>
+              <span className="text-[11px] text-slate-400">Every story is a real report, closed with a verified photo</span>
             </div>
 
+            {stories === null && <p className="text-sm text-slate-500">Loading stories…</p>}
+            {stories?.length === 0 && (
+              <div className="bg-white rounded-2xl p-8 border border-slate-100 text-center text-sm text-slate-500">
+                No fixes yet. When someone resolves a report with a photo, it shows up here with its before and after pictures.
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {transformations.map((trf) => {
-                const isAfter = storyToggle[trf.id] === 'after';
+              {stories?.map((story) => {
+                const showBefore = !!story.beforeImage && storyToggle[story.id] === 'before';
                 return (
-                  <div key={trf.id} className="bg-white rounded-2xl overflow-hidden flex flex-col border border-slate-100 shadow-sm">
-                    {/* Sliding Split-screen image view */}
-                    <div className="relative h-60 md:h-72 w-full overflow-hidden border-b border-slate-50 bg-slate-50">
-                      
-                      {/* Before frame */}
-                      <img 
-                        alt="Before state"
-                        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
-                          !isAfter ? 'opacity-100 z-10' : 'opacity-0 z-0'
-                        }`}
-                        referrerPolicy="no-referrer"
-                        src={trf.beforeImage}
+                  <article key={story.id} className="bg-white rounded-2xl overflow-hidden flex flex-col border border-slate-100 shadow-sm">
+                    <div className="relative h-60 md:h-72 w-full overflow-hidden border-b border-slate-50 bg-slate-100">
+                      <img
+                        alt={showBefore ? 'Before the fix' : 'After the fix'}
+                        className="absolute inset-0 w-full h-full object-cover"
+                        src={assetUrl(showBefore ? story.beforeImage! : story.afterImage)}
                       />
-
-                      {/* After frame */}
-                      <img 
-                        alt="After state"
-                        className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
-                          isAfter ? 'opacity-100 z-10' : 'opacity-0 z-0'
-                        }`}
-                        referrerPolicy="no-referrer"
-                        src={trf.afterImage}
-                      />
-
-                      {/* Overlay badges */}
-                      <span className="absolute top-4 left-4 bg-slate-900/80 backdrop-blur-sm px-2.5 py-1 rounded-full font-sans text-[10px] font-bold text-white z-20">
-                        Before
+                      <span className={`absolute top-4 left-4 backdrop-blur-sm px-2.5 py-1 rounded-full font-sans text-[10px] font-bold text-white z-20 ${showBefore ? 'bg-slate-900/80' : 'bg-teal-500/90'}`}>
+                        {showBefore ? 'Before' : 'After'}
                       </span>
-                      <span className="absolute top-4 right-4 bg-teal-500/90 backdrop-blur-sm px-2.5 py-1 rounded-full font-sans text-[10px] font-bold text-white z-20">
-                        After
-                      </span>
-
-                      {/* Swipe / toggle trigger helper in middle */}
-                      <div className="absolute inset-x-0 bottom-4 flex justify-center z-20">
-                        <div className="flex bg-white/95 backdrop-blur-md p-1 rounded-full shadow-lg border border-slate-100">
-                          <button 
-                            onClick={() => setStoryToggle(p => ({ ...p, [trf.id]: 'before' }))}
-                            className={`px-3 py-1.5 rounded-full font-sans text-[9px] font-bold cursor-pointer transition-colors focus:outline-none ${
-                              !isAfter ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-blue-600'
-                            }`}
-                          >
-                            Before
-                          </button>
-                          <button 
-                            onClick={() => setStoryToggle(p => ({ ...p, [trf.id]: 'after' }))}
-                            className={`px-3 py-1.5 rounded-full font-sans text-[9px] font-bold cursor-pointer transition-colors focus:outline-none ${
-                              isAfter ? 'bg-teal-500 text-white' : 'text-slate-500 hover:text-teal-600'
-                            }`}
-                          >
-                            After
-                          </button>
+                      {story.beforeImage ? (
+                        <div className="absolute inset-x-0 bottom-4 flex justify-center z-20">
+                          <div className="flex bg-white/95 backdrop-blur-md p-1 rounded-full shadow-lg border border-slate-100">
+                            {(['before', 'after'] as const).map((side) => (
+                              <button
+                                key={side}
+                                onClick={() => setStoryToggle((p) => ({ ...p, [story.id]: side }))}
+                                className={`px-3 py-1.5 rounded-full font-sans text-[9px] font-bold cursor-pointer transition-colors focus:outline-none capitalize ${
+                                  (side === 'before') === showBefore ? (side === 'before' ? 'bg-blue-600 text-white' : 'bg-teal-500 text-white') : 'text-slate-500'
+                                }`}
+                              >
+                                {side}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <span className="absolute bottom-4 left-4 bg-white/90 px-2.5 py-1 rounded-full text-[10px] font-semibold text-slate-500 z-20">
+                          No photo was taken when this was reported
+                        </span>
+                      )}
                     </div>
 
-                    {/* Meta info */}
-                    <div className="p-6 space-y-3.5">
-                      <div className="flex gap-2">
-                        <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full font-sans text-[9px] font-bold border border-slate-200 shadow-xs">
-                          {trf.category}
+                    <div className="p-6 space-y-3">
+                      <div className="flex flex-wrap gap-2 text-[9px] font-bold">
+                        <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-full border border-slate-200">{story.category}</span>
+                        <span className="bg-teal-50 text-teal-700 px-2.5 py-1 rounded-full border border-teal-100">
+                          Fixed in {story.hoursToResolve < 1 ? 'under an hour' : story.hoursToResolve < 48 ? `${Math.round(story.hoursToResolve)} h` : `${Math.round(story.hoursToResolve / 24)} days`}
                         </span>
                       </div>
-                      
-                      <h3 className="font-sans text-sm font-bold text-slate-800 leading-tight">{trf.title}</h3>
-                      <p className="font-sans text-xs text-slate-500 leading-relaxed">{trf.description}</p>
-                      
-                      <div className="pt-4 border-t border-slate-50 flex items-center gap-3">
-                        <div className="flex -space-x-2.5">
-                          {trf.heroesAvatars.map((av, idx) => (
-                            <img 
-                              key={idx} 
-                              alt="Hero Avatar" 
-                              className="w-8 h-8 rounded-full border border-white object-cover" 
-                              referrerPolicy="no-referrer"
-                              src={av}
-                            />
-                          ))}
-                        </div>
-                        <span className="font-sans text-[10px] font-bold text-slate-400">
-                          {trf.reportedBy || `+${trf.heroesCount} Heroes participated`}
-                        </span>
-                      </div>
+                      <h3 className="font-sans text-sm font-bold text-slate-800 leading-tight">{story.title}</h3>
+                      {story.details && <p className="font-sans text-xs text-slate-500 leading-relaxed">{story.details}</p>}
+                      <p className="pt-3 border-t border-slate-50 text-[11px] text-slate-500">
+                        Reported by <strong className="text-slate-700">{story.reportedBy.name}</strong>, fixed by <strong className="text-slate-700">{story.resolvedBy.name}</strong>
+                        {' '}on {new Date(story.resolvedAt).toLocaleDateString()}
+                      </p>
                     </div>
-                  </div>
+                  </article>
                 );
               })}
             </div>
           </section>
 
-          {/* Top Weekly Contributors shoutouts */}
-          <section className="space-y-6 relative pb-8">
-            <div className="text-center">
-              <h2 className="font-sans text-lg font-black text-slate-800">This Week's Top Contributors</h2>
-              <p className="font-sans text-xs text-slate-500 mt-1">The folks making the most active impact for good.</p>
-            </div>
-
-            <div className="flex flex-wrap gap-6 justify-center">
-              
-              {/* Elena M. */}
-              <div className="w-64 bg-white rounded-2xl p-6 flex flex-col items-center text-center gap-4 relative overflow-hidden border border-slate-100 shadow-sm">
-                <div className="absolute top-0 right-0 w-16 h-16 bg-blue-50 rounded-bl-full opacity-60 z-0"></div>
-                <div className="relative z-10">
-                  <img alt="Top Hero" className="w-16 h-16 rounded-full border-2 border-white object-cover shadow-sm" referrerPolicy="no-referrer" src="https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=150" />
-                  <div className="absolute bottom-0 right-0 bg-blue-100 text-blue-700 rounded-full w-5 h-5 flex items-center justify-center border border-white font-bold text-[9px] shadow-xs">
-                    1
-                  </div>
-                </div>
-                <div className="relative z-10">
-                  <h3 className="font-sans text-sm font-bold text-slate-800 leading-none">Elena M.</h3>
-                  <p className="font-sans text-[10px] text-blue-600 font-bold uppercase mt-1">Local Legend</p>
-                </div>
-                <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-100">3,100 pts earned</span>
-                
-                <button 
-                  onClick={() => sendHighFive('Elena M.')}
-                  className="px-4 py-2 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 font-sans text-[10px] font-bold transition-all flex items-center gap-1.5 focus:outline-none cursor-pointer border border-blue-100"
-                >
-                  <span className="material-symbols-outlined text-xs">waving_hand</span> 
-                  High Five ({highFives['Elena M.']})
-                </button>
+          {leaderboard.length > 0 && (
+            <section className="space-y-6 pb-8">
+              <div className="text-center">
+                <h2 className="font-sans text-lg font-black text-slate-800">Top contributors</h2>
+                <p className="font-sans text-xs text-slate-500 mt-1">Ranked by Hero Points earned.</p>
               </div>
-
-              {/* Marcus T. */}
-              <div className="w-64 bg-white rounded-2xl p-6 flex flex-col items-center text-center gap-4 relative overflow-hidden border border-slate-100 shadow-sm">
-                <div className="absolute top-0 right-0 w-16 h-16 bg-blue-50 rounded-bl-full opacity-60 z-0"></div>
-                <div className="relative z-10">
-                  <img alt="Hero 2" className="w-16 h-16 rounded-full border-2 border-white object-cover shadow-sm" referrerPolicy="no-referrer" src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150" />
-                  <div className="absolute bottom-0 right-0 bg-slate-200 text-slate-700 rounded-full w-5 h-5 flex items-center justify-center border border-white font-bold text-[9px] shadow-xs">
-                    2
+              <div className="flex flex-wrap gap-6 justify-center">
+                {leaderboard.slice(0, 3).map((cit) => (
+                  <div key={cit.rank} className="w-56 bg-white rounded-2xl p-6 flex flex-col items-center text-center gap-3 border border-slate-100 shadow-sm">
+                    <div className="relative">
+                      <img alt={cit.name} className="w-16 h-16 rounded-full border-2 border-white object-cover shadow-sm" referrerPolicy="no-referrer" src={cit.avatar} />
+                      <div className="absolute bottom-0 right-0 bg-blue-100 text-blue-700 rounded-full w-5 h-5 flex items-center justify-center border border-white font-bold text-[9px]">
+                        {cit.rank}
+                      </div>
+                    </div>
+                    <h3 className="font-sans text-sm font-bold text-slate-800">{cit.name}</h3>
+                    <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-100">
+                      {cit.points.toLocaleString()} pts
+                    </span>
                   </div>
-                </div>
-                <div className="relative z-10">
-                  <h3 className="font-sans text-sm font-bold text-slate-800 leading-none">Marcus T.</h3>
-                  <p className="font-sans text-[10px] text-blue-600 font-bold uppercase mt-1">Pavement Pioneer</p>
-                </div>
-                <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-100">2,450 pts earned</span>
-                
-                <button 
-                  onClick={() => sendHighFive('Marcus T.')}
-                  className="px-4 py-2 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 font-sans text-[10px] font-bold transition-all flex items-center gap-1.5 focus:outline-none cursor-pointer border border-blue-100"
-                >
-                  <span className="material-symbols-outlined text-xs">waving_hand</span> 
-                  High Five ({highFives['Marcus T.']})
-                </button>
+                ))}
               </div>
-
-              {/* Samira K. */}
-              <div className="w-64 bg-white rounded-2xl p-6 flex flex-col items-center text-center gap-4 relative overflow-hidden border border-slate-100 shadow-sm">
-                <div className="relative z-10">
-                  <div className="w-16 h-16 rounded-full border border-slate-100 bg-slate-50 text-blue-600 flex items-center justify-center font-bold shadow-sm">
-                    <span className="material-symbols-outlined text-2xl">person</span>
-                  </div>
-                  <div className="absolute bottom-0 right-0 bg-slate-200 text-slate-700 rounded-full w-5 h-5 flex items-center justify-center border border-white font-bold text-[9px] shadow-xs">
-                    3
-                  </div>
-                </div>
-                <div className="relative z-10">
-                  <h3 className="font-sans text-sm font-bold text-slate-800 leading-none">Samira K.</h3>
-                  <p className="font-sans text-[10px] text-slate-500 font-bold uppercase mt-1">Eco Guardian</p>
-                </div>
-                <span className="text-[10px] font-bold text-teal-600 bg-teal-50 px-2.5 py-1 rounded-full border border-teal-100">1,800 pts earned</span>
-                
-                <button 
-                  onClick={() => sendHighFive('Samira K.')}
-                  className="px-4 py-2 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-600 font-sans text-[10px] font-bold transition-all flex items-center gap-1.5 focus:outline-none cursor-pointer border border-blue-100"
-                >
-                  <span className="material-symbols-outlined text-xs">waving_hand</span> 
-                  High Five ({highFives['Samira K.']})
-                </button>
-              </div>
-
-            </div>
-          </section>
-
+            </section>
+          )}
         </div>
       )}
 
