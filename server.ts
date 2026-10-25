@@ -9,6 +9,7 @@ import connectDB from './config/db';
 import Report from './models/Report';
 import { seedDemoReports } from './services/reports';
 import { startWorker } from './services/jobs';
+import { log } from './services/logger';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -16,11 +17,11 @@ const PORT = Number(process.env.PORT) || 3000;
 function checkRequiredEnv() {
   const missing = ['MONGODB_URI', 'JWT_SECRET'].filter((key) => !process.env[key]);
   if (missing.length > 0) {
-    console.error(`Missing required environment variables: ${missing.join(', ')}. Copy .env.example to .env and fill them in.`);
+    log.error(`Missing required environment variables: ${missing.join(', ')}. Copy .env.example to .env and fill them in.`);
     process.exit(1);
   }
   if (!process.env.GEMINI_API_KEY) {
-    console.warn('GEMINI_API_KEY is not set. AI features will use their offline fallbacks.');
+    log.warn('GEMINI_API_KEY is not set. AI features will use their offline fallbacks.');
   }
 }
 
@@ -76,7 +77,7 @@ async function seedDemoUsers() {
         joinedSquads: []
       });
 
-      console.log("Created demo user:", u.email);
+      log.info("Created demo user:", u.email);
     }
   }
 }
@@ -87,13 +88,15 @@ async function startServer() {
   try {
     await connectDB();
   } catch (err: any) {
-    console.error('Could not connect to MongoDB. Check MONGODB_URI.', err.message);
+    log.error('Could not connect to MongoDB. Check MONGODB_URI.', err.message);
     process.exit(1);
   }
 
   await seedDemoUsers();
-  // Distance sorting needs the reports' 2dsphere index; wait until it exists before serving
-  await Report.init();
+  // Distance sorting needs the reports' 2dsphere index; wait until it exists before serving.
+  // syncIndexes also drops indexes the schema no longer declares (the old location-only geo
+  // index), since $geoNear refuses to run when two geo indexes could serve it.
+  await Report.syncIndexes();
   await seedDemoReports();
 
   if (process.env.NODE_ENV !== 'production') {
@@ -111,20 +114,20 @@ async function startServer() {
   }
 
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
+    log.info(`Server running on port ${PORT}`);
   });
 
   // Runs queued background jobs (AI photo checks, report triage) in this process.
   // RUN_JOB_WORKER=false turns it off, e.g. for a web-only instance when a separate worker runs.
   const worker = process.env.RUN_JOB_WORKER === 'false' ? null : startWorker();
-  if (worker) console.log(`Job worker ${worker.id} started`);
+  if (worker) log.info(`Job worker ${worker.id} started`);
 
   // Hosts send SIGTERM before replacing the server during a deploy. Stop taking new
   // connections and jobs, let running jobs finish, close the database cleanly, and give up
   // after 10 seconds, since open live-update streams would otherwise keep the server alive.
   // A job cut off by the deadline isn't lost: its lease runs out and another worker retries it.
   const shutdown = (signal: string) => {
-    console.log(`${signal} received, shutting down`);
+    log.info(`${signal} received, shutting down`);
     setTimeout(() => process.exit(0), 10_000).unref();
     const httpClosed = new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeAllConnections?.();

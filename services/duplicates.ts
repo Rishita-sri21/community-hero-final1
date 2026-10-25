@@ -179,6 +179,8 @@ export async function mergeDuplicate(duplicateId: string, targetId: string) {
   const merged = await Report.findOneAndUpdate(
     { _id: targetId },
     [
+      // $ifNull: documents written outside Mongoose may lack the arrays, and $setUnion of a missing field is null
+      { $set: { upvotedBy: { $ifNull: ['$upvotedBy', []] }, verifiedBy: { $ifNull: ['$verifiedBy', []] }, upvotes: { $ifNull: ['$upvotes', 0] } } },
       { $set: { mergedUpvoters: { $setUnion: ['$upvotedBy', supporters] }, verifiedBy: { $setUnion: ['$verifiedBy', verifiers] } } },
       {
         $set: {

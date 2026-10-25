@@ -1,7 +1,10 @@
 import os from 'os';
 import { randomBytes } from 'crypto';
 import { EventEmitter } from 'events';
+import mongoose from 'mongoose';
 import Job, { JobDoc } from '../models/Job';
+import { currentLogContext, log, withLogContext } from './logger';
+import { gaugeFromCallback, jobDuration, jobsProcessed, jobWait } from './metrics';
 
 // A durable background job queue stored in MongoDB (models/Job.ts).
 //
@@ -51,7 +54,14 @@ export async function enqueue(
   options: { createdBy?: unknown; maxAttempts?: number } = {}
 ) {
   if (!handlers.has(type)) throw new Error(`No handler registered for job type "${type}"`);
-  const job = await Job.create({ type, payload, createdBy: options.createdBy as any, maxAttempts: options.maxAttempts ?? 3 });
+  const job = await Job.create({
+    type,
+    payload,
+    createdBy: options.createdBy as any,
+    maxAttempts: options.maxAttempts ?? 3,
+    // The request that asked for this work, so the job's log lines can be found with the request's
+    requestId: currentLogContext()?.requestId,
+  });
   wake.emit('enqueued');
   return job;
 }
@@ -88,11 +98,30 @@ export async function claimNext(workerId: string, now = new Date()) {
 }
 
 /**
+ * Runs one attempt of a claimed job, with its log lines tagged with the job and the request
+ * that queued it, and records how long it waited and ran.
+ */
+export async function runJob(job: JobDoc, workerId: string) {
+  return withLogContext({ requestId: job.requestId ?? undefined, jobId: String(job._id), jobType: job.type }, async () => {
+    if (job.startedAt && job.runAt) {
+      jobWait.observe({ type: job.type }, Math.max(0, (job.startedAt.getTime() - job.runAt.getTime()) / 1000));
+    }
+    const started = process.hrtime.bigint();
+    const outcome = await runAttempt(job, workerId);
+    const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+    jobDuration.observe({ type: job.type }, seconds);
+    jobsProcessed.inc({ type: job.type, outcome });
+    log.info('job attempt finished', { outcome, attempt: job.attempts, durationMs: Math.round(seconds * 1000) });
+    return outcome;
+  });
+}
+
+/**
  * Runs a claimed job and records the outcome. Every write is fenced on (worker, attempt):
  * if this worker's lease ran out and another worker re-claimed the job, attempts has
  * changed, so this worker's late result is ignored instead of overwriting the newer run.
  */
-export async function runJob(job: JobDoc, workerId: string) {
+async function runAttempt(job: JobDoc, workerId: string) {
   const fence = { _id: job._id, lockedBy: workerId, attempts: job.attempts };
   const finish = (fields: Record<string, unknown>) => {
     const finishedAt = new Date();
@@ -126,12 +155,12 @@ export async function runJob(job: JobDoc, workerId: string) {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (err instanceof PermanentJobError || job.attempts >= job.maxAttempts) {
-      console.error(`Job ${job._id} (${job.type}) failed for good after ${job.attempts} attempt(s): ${message}`);
+      log.error(`Job failed for good after ${job.attempts} attempt(s)`, { error: message });
       await finish({ status: 'failed', error: message });
       return 'failed' as const;
     }
     const delay = backoffMs(job.attempts);
-    console.warn(`Job ${job._id} (${job.type}) attempt ${job.attempts} failed, retrying in ${Math.round(delay / 1000)} s: ${message}`);
+    log.warn(`Job attempt ${job.attempts} failed, retrying in ${Math.round(delay / 1000)} s`, { error: message });
     await Job.updateOne(fence, {
       $set: { status: 'pending', error: message, runAt: new Date(Date.now() + delay) },
       $unset: { lockedBy: 1, lockedUntil: 1 },
@@ -178,7 +207,7 @@ export function startWorker() {
           const job = await claimNext(id);
           if (!job) break;
           const run: Promise<unknown> = runJob(job, id)
-            .catch((err) => console.error(`Worker ${id} could not record job ${job._id}:`, err))
+            .catch((err) => log.error(`Worker ${id} could not record job ${job._id}`, err))
             .finally(() => {
               inFlight.delete(run);
               void fill();
@@ -188,7 +217,7 @@ export function startWorker() {
       } while (fillAgain && !stopping);
     } catch (err) {
       // e.g. the database is briefly unreachable; the next poll tries again
-      console.error(`Worker ${id} could not claim jobs:`, err instanceof Error ? err.message : err);
+      log.error(`Worker ${id} could not claim jobs`, err);
     } finally {
       filling = false;
     }
@@ -289,3 +318,11 @@ export async function queueStats(now = new Date()) {
     })),
   };
 }
+
+// Queue depth by status, read from the database each time metrics are scraped
+gaugeFromCallback('jobs_queue_depth', 'Background jobs by status', ['status'], async () => {
+  // Never wait on a disconnected database: a scrape should answer even when MongoDB is down
+  if (mongoose.connection.readyState !== 1) return [];
+  const counts = await Job.aggregate([{ $match: { status: { $in: ['pending', 'running', 'failed'] } } }, { $group: { _id: '$status', n: { $sum: 1 } } }]);
+  return ['pending', 'running', 'failed'].map((status) => ({ labels: { status }, value: counts.find((c) => c._id === status)?.n ?? 0 }));
+});

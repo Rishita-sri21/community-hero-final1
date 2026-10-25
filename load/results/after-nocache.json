@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-25T11:04:56.950Z",
+  "baseUrl": "http://localhost:3100",
+  "durationSeconds": 10,
+  "node": "v22.22.0",
+  "label": "after-nocache",
+  "rows": [
+    {
+      "scenario": "Health check (baseline)",
+      "connections": 25,
+      "requests": 20695,
+      "rps": 2070,
+      "p50Ms": 11,
+      "p90Ms": 16,
+      "p99Ms": 26,
+      "maxMs": 247,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Nearby reports, random spots",
+      "connections": 25,
+      "requests": 468,
+      "rps": 47,
+      "p50Ms": 526,
+      "p90Ms": 653,
+      "p99Ms": 774,
+      "maxMs": 883,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Nearby reports, neighborhood centers",
+      "connections": 25,
+      "requests": 501,
+      "rps": 50,
+      "p50Ms": 487,
+      "p90Ms": 623,
+      "p99Ms": 831,
+      "maxMs": 907,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Analytics, random spots",
+      "connections": 25,
+      "requests": 258,
+      "rps": 23,
+      "p50Ms": 1039,
+      "p90Ms": 1249,
+      "p99Ms": 1357,
+      "maxMs": 1364,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Analytics, neighborhood centers",
+      "connections": 25,
+      "requests": 220,
+      "rps": 22,
+      "p50Ms": 1069,
+      "p90Ms": 1363,
+      "p99Ms": 1666,
+      "maxMs": 1758,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Duplicate check while typing",
+      "connections": 25,
+      "requests": 2501,
+      "rps": 250,
+      "p50Ms": 93,
+      "p90Ms": 127,
+      "p99Ms": 216,
+      "maxMs": 492,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Mission planning (cluster + route)",
+      "connections": 25,
+      "requests": 537,
+      "rps": 54,
+      "p50Ms": 473,
+      "p90Ms": 568,
+      "p99Ms": 648,
+      "maxMs": 683,
+      "errors": 0,
+      "non2xx": 0
+    },
+    {
+      "scenario": "Post a report (write + duplicate check + queued triage)",
+      "connections": 10,
+      "requests": 866,
+      "rps": 87,
+      "p50Ms": 109,
+      "p90Ms": 150,
+      "p99Ms": 226,
+      "maxMs": 281,
+      "errors": 0,
+      "non2xx": 0
+    }
+  ]
+}

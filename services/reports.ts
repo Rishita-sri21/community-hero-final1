@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import Report from '../models/Report';
 import User from '../models/User';
 import type { Report as PublicReport } from '../src/types';
+import { createCache } from './cache';
+import { onReportChange } from './events';
 
 export const CATEGORIES = ['Pothole', 'Graffiti', 'Streetlight', 'Park Maintenance', 'Waste Management', 'Water Leakage'];
 export const URGENCIES = ['High', 'Medium', 'Low'];
@@ -51,8 +53,8 @@ export function toPublicReport(report: any, user?: any, distanceMeters?: number)
     locationDetails: report.locationDetails,
     distanceKm: distanceMeters === undefined ? undefined : Math.round(distanceMeters / 100) / 10,
     isMine: isOwner(report, user),
-    hasUpvoted: userId ? report.upvotedBy.some((id: unknown) => String(id) === userId) : false,
-    hasVerified: userId ? report.verifiedBy.some((id: unknown) => String(id) === userId) : false,
+    hasUpvoted: userId ? (report.upvotedBy ?? []).some((id: unknown) => String(id) === userId) : false,
+    hasVerified: userId ? (report.verifiedBy ?? []).some((id: unknown) => String(id) === userId) : false,
     possibleDuplicate:
       report.status === 'open' && report.possibleDuplicate?.id
         ? { id: String(report.possibleDuplicate.id), title: report.possibleDuplicate.title, score: report.possibleDuplicate.score }
@@ -70,21 +72,35 @@ export function toPublicReport(report: any, user?: any, distanceMeters?: number)
   };
 }
 
+// The nearest-open-reports query is the most frequent read (every map and home screen load) and
+// most viewers in a neighborhood ask for the same center (their district's). Results are cached
+// by location and dropped whenever any report changes, so a cached list is never out of date.
+const nearbyCache = createCache<any[]>({ ttlMs: 60_000, maxEntries: 200 });
+onReportChange(() => nearbyCache.invalidate());
+
+export const nearbyReportsCacheStats = () => nearbyCache.stats();
+
 /** Open reports, nearest first when a location is given, otherwise newest first. */
 export async function listOpenReports(near?: { lat: number; lng: number }, limit = 200) {
   if (near) {
-    // $geoNear must be the first pipeline stage; it uses the 2dsphere index and adds the distance
-    return Report.aggregate([
-      {
-        $geoNear: {
-          near: { type: 'Point', coordinates: [near.lng, near.lat] },
-          distanceField: 'distanceMeters',
-          query: { status: 'open' },
-          spherical: true,
+    // ~11 m precision: the same neighborhood center always maps to the same key
+    const key = `${near.lat.toFixed(4)},${near.lng.toFixed(4)},${limit}`;
+    return nearbyCache.get(key, () =>
+      // $geoNear must be the first pipeline stage; it uses the 2dsphere index and adds the distance
+      Report.aggregate([
+        {
+          $geoNear: {
+            near: { type: 'Point', coordinates: [near.lng, near.lat] },
+            distanceField: 'distanceMeters',
+            query: { status: 'open' },
+            spherical: true,
+          },
         },
-      },
-      { $limit: limit },
-    ]);
+        { $limit: limit },
+        // Large fields the list doesn't show
+        { $project: { resolution: 0, possibleDuplicate: 0, __v: 0 } },
+      ])
+    );
   }
   return Report.find({ status: 'open' }).sort({ createdAt: -1 }).limit(limit).lean();
 }

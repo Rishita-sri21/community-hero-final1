@@ -1,5 +1,6 @@
 import { Type } from '@google/genai';
 import { getGenAI, GEMINI_MODEL, withTimeout } from './ai';
+import { timeAiCall } from './metrics';
 import { CATEGORIES, URGENCIES } from './reports';
 
 // The two AI judgments the app makes about photos, behind one small interface so the job
@@ -60,7 +61,7 @@ ${before
     : 'The only image is the AFTER photo. Set success to true only if it clearly shows the kind of place described, with the problem fixed.'}
 If the AFTER photo is unrelated to the report (a screenshot, a person, an indoor scene, a different kind of place) or the problem is still visible, set success to false and explain why in details.`;
 
-  const response = await withTimeout(
+  const response = await timeAiCall('fix-check', () => withTimeout(
     getGenAI()!.models.generateContent({
       model: GEMINI_MODEL,
       contents: { parts: [...(before ? [toPart(before)] : []), toPart(after), { text: prompt }] },
@@ -78,7 +79,7 @@ If the AFTER photo is unrelated to the report (a screenshot, a person, an indoor
       },
     }),
     AI_TIMEOUT_MS
-  );
+  ));
   // A malformed answer throws here, and the job is retried
   const parsed = JSON.parse(response.text || '');
   if (typeof parsed.success !== 'boolean') throw new Error('The model returned no decision');
@@ -100,7 +101,7 @@ Choose the category from: ${CATEGORIES.join(', ')}.
 Choose urgency: High (a danger to people or property, or blocking a road or path), Medium (should be fixed soon), Low (cosmetic).
 Give a one-sentence reason that mentions what you saw or read.`;
 
-  const response = await withTimeout(
+  const response = await timeAiCall('triage', () => withTimeout(
     getGenAI()!.models.generateContent({
       model: GEMINI_MODEL,
       contents: { parts: [...(photo ? [toPart(photo)] : []), { text: prompt }] },
@@ -118,7 +119,7 @@ Give a one-sentence reason that mentions what you saw or read.`;
       },
     }),
     AI_TIMEOUT_MS
-  );
+  ));
   const parsed = JSON.parse(response.text || '');
   // The model's answer is untrusted input too: only accept values from the allowed lists
   if (!CATEGORIES.includes(parsed.category) || !URGENCIES.includes(parsed.urgency)) {

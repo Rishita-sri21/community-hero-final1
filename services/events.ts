@@ -18,8 +18,15 @@ bus.setMaxListeners(0); // one listener per open browser tab
 
 const HEARTBEAT_MS = 25_000;
 
+// Called on every report change, e.g. to drop cached report lists
+const changeListeners: Array<() => void> = [];
+export function onReportChange(listener: () => void) {
+  changeListeners.push(listener);
+}
+
 /** Sends an event to everyone connected. Fields that depend on the viewer are left out. */
 export function publish(event: LiveEvent) {
+  for (const listener of changeListeners) listener();
   if ('report' in event) {
     const { isMine, hasUpvoted, hasVerified, distanceKm, ...shared } = event.report;
     event = { ...event, report: shared };

@@ -1,4 +1,5 @@
 import Notification from '../models/Notification';
+import { log } from './logger';
 import { timeAgo } from './reports';
 
 type Kind = 'upvote' | 'verify' | 'resolved';
@@ -12,7 +13,7 @@ export function notifyReporter(kind: Kind, report: any, actor: any) {
     type: kind,
     report: { id: report._id, title: report.title },
     actor: { name: actor.name, avatar: actor.avatar },
-  }).catch((err) => console.error('Could not save notification:', err));
+  }).catch((err) => log.error('Could not save notification:', err));
 }
 
 export async function listNotifications(userId: unknown, limit = 20) {

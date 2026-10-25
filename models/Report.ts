@@ -61,7 +61,10 @@ const reportSchema = new mongoose.Schema(
 );
 
 // Lets /api/reports sort reports by distance from the user's neighborhood
-reportSchema.index({ location: "2dsphere" });
+// status is part of the geo index, so the "open reports near here" queries can skip resolved
+// reports from the index alone instead of fetching each document to check it (measured in
+// load/README.md: about a third fewer documents read and ~30% faster)
+reportSchema.index({ location: "2dsphere", status: 1 });
 reportSchema.index({ "reporter.id": 1, createdAt: -1 });
 
 export type ReportDoc = mongoose.InferSchemaType<typeof reportSchema> & { _id: mongoose.Types.ObjectId; createdAt: Date };

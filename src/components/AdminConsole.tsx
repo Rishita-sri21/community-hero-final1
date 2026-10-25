@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { api, JobQueueStats } from '../lib/api';
+import { api, JobQueueStats, LatencyRow, PerformanceSnapshot } from '../lib/api';
 import { toast, errorMessage } from '../lib/toast';
-import { Database, ShieldAlert, CheckCircle, RefreshCw, Server, Search, Lock, AlertOctagon, Download, Info, Activity, ListChecks } from 'lucide-react';
+import { Database, ShieldAlert, CheckCircle, RefreshCw, Server, Search, Lock, AlertOctagon, Download, Info, Activity, ListChecks, Gauge } from 'lucide-react';
 
 const EVENT_FILTERS = ['ALL', 'SECURITY_VIOLATION', 'AUTH_LOGIN', 'AUTH_REGISTER', 'REPORT_CREATED', 'REPORT_VERIFIED', 'REPORT_RESOLVED', 'DB_EXPORT', 'JOB_RETRIED'];
 const EXPORTABLE = [
@@ -21,6 +21,45 @@ function formatMs(ms: number) {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
+function formatLatency(ms: number | null) {
+  if (ms === null) return '—';
+  return ms < 1000 ? `${ms.toFixed(ms < 10 ? 1 : 0)} ms` : `${(ms / 1000).toFixed(2)} s`;
+}
+
+function LatencyTable({ title, rows }: { title: string; rows: Array<LatencyRow & { name: string }> }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead>
+          <tr className="border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
+            <th className="pb-3">{title}</th>
+            <th className="pb-3 text-right">Count</th>
+            <th className="pb-3 text-right">Errors</th>
+            <th className="pb-3 text-right">p50</th>
+            <th className="pb-3 text-right">p95</th>
+            <th className="pb-3 text-right">p99</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-50 font-semibold text-slate-600">
+          {rows.length === 0 && (
+            <tr><td colSpan={6} className="py-3 text-slate-400">Nothing measured yet.</td></tr>
+          )}
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td className="py-2.5 font-mono text-[11px]">{r.name}</td>
+              <td className="py-2.5 text-right font-mono">{r.count}</td>
+              <td className={`py-2.5 text-right font-mono ${r.errors ? 'text-rose-600' : ''}`}>{r.errors ?? '—'}</td>
+              <td className="py-2.5 text-right font-mono">{formatLatency(r.p50Ms)}</td>
+              <td className="py-2.5 text-right font-mono">{formatLatency(r.p95Ms)}</td>
+              <td className="py-2.5 text-right font-mono">{formatLatency(r.p99Ms)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function formatUptime(seconds?: number) {
   if (!seconds) return '—';
   const h = Math.floor(seconds / 3600);
@@ -38,14 +77,16 @@ export default function AdminConsole() {
   const [filterType, setFilterType] = useState<string>('ALL');
   const [queue, setQueue] = useState<JobQueueStats | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [perf, setPerf] = useState<PerformanceSnapshot | null>(null);
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [statusData, logsData, queueData] = await Promise.all([api.getDbStatus(), api.getAuditLogs(), api.getJobQueue()]);
+      const [statusData, logsData, queueData, perfData] = await Promise.all([api.getDbStatus(), api.getAuditLogs(), api.getJobQueue(), api.getPerformance()]);
       setStatus(statusData);
       setLogs(logsData);
       setQueue(queueData);
+      setPerf(perfData);
     } catch (err) {
       toast.error(errorMessage(err, 'Could not load the admin console.'));
     } finally {
@@ -96,10 +137,11 @@ export default function AdminConsole() {
     fetchData();
   }, []);
 
-  // The queue changes by the second; refresh it on its own while the console is open
+  // The queue and latency numbers change by the second; refresh them on their own while the console is open
   useEffect(() => {
     const timer = setInterval(() => {
       api.getJobQueue().then(setQueue).catch(() => {});
+      api.getPerformance().then(setPerf).catch(() => {});
     }, 5000);
     return () => clearInterval(timer);
   }, []);
@@ -223,6 +265,39 @@ export default function AdminConsole() {
             : 'No exports yet.'}
         </p>
       </div>
+
+      {perf && (
+        <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-5">
+          <div className="space-y-1">
+            <h3 className="font-black text-slate-800 text-sm flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-teal-500" /> Performance
+            </h3>
+            <p className="text-slate-400 text-[11px]">
+              Latency percentiles measured by this server since it started {formatUptime(perf.uptimeSeconds)} ago, from the same
+              histograms Prometheus scrapes at <span className="font-mono">/metrics</span>. Refreshes every 5 seconds.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+              <div className="text-[10px] text-slate-400 font-bold uppercase">Requests served</div>
+              <div className="font-mono font-bold text-slate-700">{perf.routes.reduce((n, r) => n + r.count, 0).toLocaleString()}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+              <div className="text-[10px] text-slate-400 font-bold uppercase">Event loop lag (p99)</div>
+              <div className="font-mono font-bold text-slate-700">{formatLatency(perf.eventLoopLagP99Ms)}</div>
+            </div>
+            <div className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+              <div className="text-[10px] text-slate-400 font-bold uppercase">Memory (RSS)</div>
+              <div className="font-mono font-bold text-slate-700">{perf.memoryRssMb === null ? '—' : `${perf.memoryRssMb} MB`}</div>
+            </div>
+          </div>
+          <LatencyTable title="API route" rows={perf.routes.filter((r) => r.route !== 'unmatched').slice(0, 12).map((r) => ({ ...r, name: `${r.method} ${r.route}` }))} />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <LatencyTable title="AI call" rows={perf.ai.map((r) => ({ ...r, name: r.operation }))} />
+            <LatencyTable title="Job type (per attempt)" rows={perf.jobs.map((r) => ({ ...r, name: r.type, errors: undefined }))} />
+          </div>
+        </div>
+      )}
 
       {queue && (
         <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-4">
