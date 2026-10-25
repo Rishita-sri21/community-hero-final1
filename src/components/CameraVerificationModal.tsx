@@ -21,7 +21,7 @@ export default function CameraVerificationModal({
   const [step, setStep] = useState<'camera' | 'preview' | 'loading' | 'certificate' | 'error'>('camera');
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
   const [auditResult, setAuditResult] = useState<any>(null);
-  const [heroPoints, setHeroPoints] = useState<number>(150);
+  const [heroPoints, setHeroPoints] = useState<number>(0);
   const [totalPoints, setTotalPoints] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
   
@@ -104,7 +104,7 @@ export default function CameraVerificationModal({
       const response = await api.resolveReport(report.id, capturedImage);
       if (response.success && response.auditResult?.success) {
         setAuditResult(response.auditResult);
-        setHeroPoints(response.heroPointsAwarded || 150);
+        setHeroPoints(response.heroPointsAwarded ?? 0);
         setTotalPoints(response.userSession?.points ?? null);
         setStep('certificate');
       } else {
@@ -113,7 +113,7 @@ export default function CameraVerificationModal({
       }
     } catch (err: any) {
       console.error(err);
-      setErrorMessage("Municipal network coordinate issue. Please confirm database connectivity and try again.");
+      setErrorMessage("Could not reach the server. Check your connection and try again.");
       setStep('error');
     }
   };
@@ -165,7 +165,7 @@ export default function CameraVerificationModal({
                   <div>
                     <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">Instructions</h4>
                     <p className="text-xs text-slate-600 mt-1 leading-relaxed">
-                      Frame the resolved issue clearly in your camera. Capture the repaired pothole, cleaned street, or fixed infrastructure to claim your multiplier points.
+                      Frame the resolved issue clearly in your camera. Capture the repaired pothole, cleaned street or fixed light. Gemini compares it with the reporter's photo before the report is closed.
                     </p>
                   </div>
                 </div>
@@ -303,58 +303,44 @@ export default function CameraVerificationModal({
 
                     <div>
                       <h4 className="font-sans text-[10px] uppercase tracking-widest text-teal-400 font-extrabold">
-                        Civic Audit Resolution Certification
+                        Fix verified
                       </h4>
                       <h3 className="font-sans text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-white via-indigo-200 to-teal-100 tracking-tight mt-1">
-                        Certificate of Civic Honor
+                        Thanks for fixing it
                       </h3>
                     </div>
 
-                    {/* Restoration Score badge & Detail */}
+                    {/* What the AI saw in the photo */}
                     <div className="bg-white/5 border border-white/10 rounded-xl p-4 text-left space-y-2">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-indigo-200 font-semibold uppercase tracking-wider text-[10px]">Audit Match Score</span>
-                        <span className="text-teal-400 font-bold">{auditResult.confidenceScore}% Quality</span>
-                      </div>
-                      <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                        <motion.div 
-                          initial={{ width: 0 }}
-                          animate={{ width: `${auditResult.confidenceScore}%` }}
-                          transition={{ duration: 1, ease: 'easeOut' }}
-                          className="h-full bg-gradient-to-r from-indigo-500 to-teal-400 rounded-full"
-                        />
-                      </div>
+                      {auditResult.confidenceScore !== null ? (
+                        <>
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="text-indigo-200 font-semibold uppercase tracking-wider text-[10px]">Gemini confidence</span>
+                            <span className="text-teal-400 font-bold">{auditResult.confidenceScore}%</span>
+                          </div>
+                          <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                            <motion.div
+                              initial={{ width: 0 }}
+                              animate={{ width: `${auditResult.confidenceScore}%` }}
+                              transition={{ duration: 1, ease: 'easeOut' }}
+                              className="h-full bg-gradient-to-r from-indigo-500 to-teal-400 rounded-full"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-amber-300 font-semibold uppercase tracking-wider text-[10px]">Demo mode: photo not checked by AI</span>
+                      )}
                       <p className="text-[11px] text-slate-300 leading-relaxed italic pt-1">
                         "{auditResult.restorationDetails}"
                       </p>
                     </div>
 
-                    {/* Green Environmental Impact Metrics */}
-                    <div className="grid grid-cols-3 gap-3">
-                      <div className="bg-slate-900/50 border border-white/5 p-3 rounded-xl text-center space-y-1">
-                        <span className="material-symbols-outlined text-teal-400 text-lg">co2</span>
-                        <span className="block text-[10px] uppercase font-bold text-slate-400 leading-none">CO2 Offset</span>
-                        <span className="block text-xs font-mono font-bold text-teal-300">-{auditResult.co2OffsetKg}kg</span>
-                      </div>
-
-                      <div className="bg-slate-900/50 border border-white/5 p-3 rounded-xl text-center space-y-1">
-                        <span className="material-symbols-outlined text-indigo-400 text-lg">energy_savings_leaf</span>
-                        <span className="block text-[10px] uppercase font-bold text-slate-400 leading-none">Eco-Index</span>
-                        <span className="block text-xs font-mono font-bold text-indigo-300">+{auditResult.ecoIndexBoost}%</span>
-                      </div>
-
-                      <div className="bg-slate-900/50 border border-white/5 p-3 rounded-xl text-center space-y-1">
-                        <span className="material-symbols-outlined text-rose-400 text-lg">health_and_safety</span>
-                        <span className="block text-[10px] uppercase font-bold text-slate-400 leading-none">Safety Index</span>
-                        <span className="block text-xs font-mono font-bold text-rose-300">+{auditResult.safetyScoreIncrease}%</span>
-                      </div>
-                    </div>
-
-                    {/* Points Multiplier highlight */}
                     <div className="bg-teal-500/10 border border-teal-500/20 py-3 rounded-xl flex items-center justify-center gap-2">
-                      <span className="material-symbols-outlined text-teal-400 animate-bounce">rocket_launch</span>
+                      <span className="material-symbols-outlined text-teal-400">task_alt</span>
                       <span className="text-xs font-sans font-bold text-teal-300">
-                        Multiplier unlocked: <strong className="text-white text-sm">+{heroPoints} Hero Points</strong> (1.5x)
+                        {heroPoints > 0
+                          ? <>Report closed: <strong className="text-white text-sm">+{heroPoints} Hero Points</strong></>
+                          : 'Report closed. Fixing your own report earns no points.'}
                       </span>
                     </div>
 
@@ -367,7 +353,7 @@ export default function CameraVerificationModal({
                   className="w-full py-4 bg-blue-600 text-white rounded-full font-sans text-xs font-bold shadow-lg hover:bg-blue-700 hover:scale-[1.01] active:scale-95 transition-all flex items-center justify-center gap-1.5 cursor-pointer focus:outline-none"
                 >
                   <span className="material-symbols-outlined">auto_stories</span>
-                  Save to Neighborhood Stories
+                  Done
                 </button>
               </motion.div>
             )}

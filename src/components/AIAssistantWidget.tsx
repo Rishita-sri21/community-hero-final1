@@ -1,16 +1,16 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { api } from '../lib/api';
+import { errorMessage } from '../lib/toast';
 
 interface AIAssistantWidgetProps {
   userDistrict?: string;
-  activeReports?: any[];
 }
 
-export default function AIAssistantWidget({ userDistrict, activeReports }: AIAssistantWidgetProps) {
+export default function AIAssistantWidget({ userDistrict }: AIAssistantWidgetProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<{ role: 'user' | 'model'; text: string }[]>([
-    { role: 'model', text: `Hello! I am your AI Civic Integrity Assistant. ${userDistrict ? `How can I help you support ${userDistrict} today?` : "Ask me anything about neighborhood reports, community action squads, or eco-index metrics!"}` }
+    { role: 'model', text: `Hi! I can answer questions about how Community Hero works and about the open reports near ${userDistrict ? userDistrict.split(' (')[0] : 'you'}.` }
   ]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(false);
@@ -32,11 +32,11 @@ export default function AIAssistantWidget({ userDistrict, activeReports }: AIAss
     setLoading(true);
 
     try {
-      const response = await api.chatWithAssistant(updatedMessages, userDistrict, activeReports);
+      const response = await api.chatWithAssistant(updatedMessages);
       setMessages([...updatedMessages, { role: 'model', text: response.text }]);
     } catch (err) {
-      console.error(err);
-      setMessages([...updatedMessages, { role: 'model', text: "I apologize, but I'm having trouble connecting to the municipal network right now. Please try again in a moment." }]);
+      // The server explains what went wrong, e.g. that no Gemini key is configured
+      setMessages([...updatedMessages, { role: 'model', text: errorMessage(err, 'The assistant could not answer right now.') }]);
     } finally {
       setLoading(false);
     }
@@ -49,9 +49,9 @@ export default function AIAssistantWidget({ userDistrict, activeReports }: AIAss
   };
 
   const PRESETS = [
-    { label: "🌱 Suggest a Squad", query: "Can you suggest a green community action squad idea for cleaning up local parks?" },
-    { label: "🚗 Carbon Stats", query: "How is the neighborhood carbon offset calculated and who is our top hero?" },
-    { label: "📸 How to Resolve", query: "How can I verify and resolve an issue to earn 1.5x points multiplier?" }
+    { label: "📍 What's urgent nearby?", query: "Which open reports near me are the most urgent?" },
+    { label: "📸 How to resolve", query: "How do I resolve a report with a photo, and how is it checked?" },
+    { label: "🗺️ Missions", query: "How does the Mission Planner choose which reports to visit?" }
   ];
 
   return (
@@ -93,10 +93,7 @@ export default function AIAssistantWidget({ userDistrict, activeReports }: AIAss
                 </div>
                 <div>
                   <h4 className="text-xs font-bold font-sans">Neighborhood AI</h4>
-                  <p className="text-[10px] text-teal-300 font-mono flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-ping"></span>
-                    Gemini 3.5 Flash Online
-                  </p>
+                  <p className="text-[10px] text-teal-300 font-mono">Answers from Gemini and live reports</p>
                 </div>
               </div>
               <button 

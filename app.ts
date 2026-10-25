@@ -1,5 +1,5 @@
 import express from 'express';
-import { GoogleGenAI, Type } from '@google/genai';
+import { Type } from '@google/genai';
 import dotenv from 'dotenv';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
@@ -10,11 +10,15 @@ import cors from 'cors';
 import { protect } from './middleware/auth';
 import { awardPoints, joinSquad, leaveSquad, logGreenAction, redeemReward } from './services/points';
 import { POINTS, MAX_REWARDED_REPORTS_PER_DAY } from './src/shared/catalog';
+import { centerForDistrict } from './src/shared/neighborhoods';
 import Report from './models/Report';
 import AuditLog from './models/AuditLog';
-import { CATEGORIES, URGENCIES, iconForCategory, isValidObjectId, listOpenReports, toPublicReport } from './services/reports';
+import { CATEGORIES, URGENCIES, iconForCategory, isValidObjectId, listOpenReports, listStories, timeAgo, toPublicReport } from './services/reports';
 import { publish, streamEvents } from './services/events';
 import mongoose from 'mongoose';
+import { getGenAI, GEMINI_MODEL, withTimeout, writeMissionBriefing } from './services/ai';
+import { planMission } from './services/missions';
+import { neighborhoodAnalytics } from './services/analytics';
 import { findImage, imageErrorMessage, parseDataUrlImage, readStoredImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
@@ -97,31 +101,6 @@ function rateLimitAuth(req: any, res: any, next: any) {
   }
 
   next();
-}
-
-// Lazy initializer for Google GenAI client
-let genAIClient: GoogleGenAI | null = null;
-function getGenAI(): GoogleGenAI | null {
-  if (!genAIClient) {
-    const key = process.env.GEMINI_API_KEY;
-
-    if (key && key !== 'MY_GEMINI_API_KEY' && key.trim() !== '') {
-      try {
-        genAIClient = new GoogleGenAI({
-          apiKey: key,
-          httpOptions: {
-            headers: {
-              'User-Agent': 'aistudio-build',
-            },
-          },
-        });
-      } catch (err) {
-        console.error('Error initializing GoogleGenAI:', err);
-      }
-    }
-  }
-
-  return genAIClient;
 }
 
 // Optional-auth middleware: if a valid token is present, attaches req.user (Mongoose doc).
@@ -354,6 +333,9 @@ function startOfToday() {
   return d;
 }
 
+// Missions only consider open reports within this distance of the start
+const MISSION_SEARCH_RADIUS_KM = 20;
+
 // Reads ?lat=&lng= from the query string, or undefined if they're missing or invalid
 function nearFromQuery(query: any) {
   const lat = Number(query.lat);
@@ -431,7 +413,7 @@ app.post('/api/reports', protect, async (req: any, res) => {
       `;
 
       const aiRes = await ai.models.generateContent({
-        model: 'gemini-3.5-flash',
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -526,249 +508,129 @@ app.post('/api/reports/:id/upvote', protect, (req, res) => voteOnReport(req, res
 app.post('/api/reports/:id/verify', protect, (req, res) => voteOnReport(req, res, 'verify'));
 
 // AI Assistant Chat endpoint
-app.post('/api/assistant/chat', async (req, res) => {
-  const { messages, userDistrict, activeReports } = req.body;
-  const ai = getGenAI();
-
-  if (!messages || !Array.isArray(messages)) {
+// The assistant answers from the real reports near the user, which the server looks up itself.
+// Without a Gemini key it says so instead of replying with canned text.
+app.post('/api/assistant/chat', protect, async (req: any, res) => {
+  const { messages } = req.body;
+  if (!Array.isArray(messages) || messages.length === 0 || messages.length > 40 ||
+      !messages.every((m: any) => typeof m?.text === 'string' && m.text.length <= 2000)) {
     return res.status(400).json({ error: 'Invalid message structure' });
   }
 
-  // Construct a hyper-contextual system instruction embedding the current site state
-  let systemInstruction = `You are the AI Civic Integrity Assistant for the Community Hero platform.
-  You are helpful, encouraging, and informative. Your goal is to guide citizens in identifying, reporting, verifying, and resolving local community issues (potholes, water leaks, flickering streetlights, waste, etc.).
-
-  [WEBSITE STRUCTURE & MODULES EMBEDDING]
-  You have complete knowledge of the Community Hero web app features:
-  1. Home Dashboard:
-     - Allows citizens to log positive daily green actions (e.g. "Planted Native Seedling", "Sorted Food Bank", "Cleared Trail Debris") to instantly earn points.
-     - Displays "Active Community Initiatives" (such as Solar Auditing and Composting).
-     - Displays a "Local Leaderboard" tracking outstanding citizens and ranks.
-  2. Map & Insights:
-     - Displays dynamic interactive pins of citizen-reported hazards.
-     - Allows reporting new issues by placing pins.
-     - Citizens can click any pin to upvote, comment, verify (+15 points), or click "Resolve Issue" which boots up the high-tech "Municipal Camera Verification Tool" to take/upload a photo of the fixed issue for a huge +150 points reward!
-  3. Community Squads:
-     - Volunteer teams collaborating on physical projects (crosswalk paint, trail cleanup).
-     - Displays "Before & After Transformation Stories" illustrating actual positive civic impact.
-  4. Rewards Store:
-     - Citizens can spend their accumulated points on physical or civic benefits (Free Metro Pass, library club passes, compost bins).
-
-  Explain points multiplier systems (+150 Hero points for camera verification), Community Squads, and how collective action offsets carbon emissions and increases neighborhood safety.
-  Be highly knowledgeable about civil engineering, park preservation, and recycling programs.
-  Keep responses concise, warm, optimistic, and directly related to hyperlocal solutions.`;
-
-  if (userDistrict) {
-    systemInstruction += `\n\n[CONTEXT: USER ENVIRONMENT]
-The active user is currently in the "${userDistrict}" neighborhood. Provide helpful advice customized to this specific district!`;
-  }
-
-  if (activeReports && Array.isArray(activeReports) && activeReports.length > 0) {
-    const reportListStr = activeReports.slice(0, 5).map((r) => `- [${r.category}] "${r.title}" in ${r.district || 'their district'} (${r.urgency} urgency)`).join('\n');
-    systemInstruction += `\n\n[CONTEXT: ACTIVE COMMUNITY HAZARDS]
-Here are some active community issues currently reported in the system:
-${reportListStr}
-You can mention these specific real-time issues and encourage the user to help verify or resolve them to earn Hero Points (+15 points for verification, +150 points for uploading a resolution image)!`;
-  } else {
-    systemInstruction += `\n\n[CONTEXT: ACTIVE COMMUNITY HAZARDS]\nThere are currently no active reports in this neighborhood. Encourage the user to explore, find a neighborhood hazard (like a broken street light or litter), and create the first report!`;
-  }
-
-  if (ai) {
-    try {
-      // Convert messages to Gemini format
-      const chatMessages = messages.map((m) => ({
-        role: m.role === 'model' ? 'model' : 'user',
-        parts: [{ text: m.text }],
-      }));
-
-      // Grab the last user message and set up the chat history
-      const lastMessage = chatMessages[chatMessages.length - 1];
-      const history = chatMessages.slice(0, chatMessages.length - 1);
-
-      const chatInstance = ai.chats.create({
-        model: 'gemini-3.5-flash',
-        config: {
-          systemInstruction,
-        },
-        history,
-      });
-
-      const response = await chatInstance.sendMessage({
-        message: lastMessage.parts[0].text || '',
-      });
-
-      return res.json({ text: response.text });
-    } catch (err: any) {
-      console.error('Gemini Chat API Error:', err);
-      return res.status(500).json({
-        text: "I'm having trouble connecting to the civic intelligence matrix right now. However, rest assured that your report is safely stored in our local community registers. Let's make our neighborhood cleaner!",
-      });
-    }
-  } else {
-    // Graceful AI simulation fallback for offline/no-key developers
-    const lastUserText = messages[messages.length - 1]?.text?.toLowerCase() || '';
-    let text = `Hello! I am your AI Civic Integrity Assistant. ${userDistrict ? `I see you are helping keep ${userDistrict} clean and safe!` : 'I am here to support your community missions.'}`;
-
-    if (activeReports && Array.isArray(activeReports) && activeReports.length > 0) {
-      const myDistrictReports = activeReports.filter((r) => r.district === userDistrict);
-      if (myDistrictReports.length > 0) {
-        text += ` In your district (${userDistrict}), we have active reports like: "${myDistrictReports[0].title}" (${myDistrictReports[0].category}). Would you like to check it out or help verify it?`;
-      } else {
-        text += ` We have active reports in other districts like: "${activeReports[0].title}" (${activeReports[0].category}) in ${activeReports[0].district}.`;
-      }
-    }
-
-    if (lastUserText.includes('squad')) {
-      text = `That's a stellar idea! Since you're in ${userDistrict || 'our municipal area'}, I highly recommend starting a Green Community Action Squad. You can clean up local trails, plant native wildflowers to support honeybees, or organize compost bins. Joining a squad unlocks a 30% bonus on all reported tasks!`;
-    } else if (lastUserText.includes('carbon') || lastUserText.includes('offset')) {
-      text = 'We calculate carbon offsets based on materials recycled and green space restored. For instance, planting a native tree seedling offsets roughly 15-20kg of CO2 over its first year. Our top contributor, Elena M., has offset over 120kg this month alone!';
-    } else if (lastUserText.includes('resolve') || lastUserText.includes('multiplier') || lastUserText.includes('verify')) {
-      text = 'You can earn a massive 1.5x multiplier (usually +150 Hero Points) by taking a photo of a resolved issue using our camera modal. Our Multi-Modal Civic Vision AI automatically audits the image, matches it to the reported issue coordinates, and verifies that the restoration is complete and high-quality!';
-    }
-
-    return res.json({ text });
-  }
-});
-
-app.post('/api/mission/generate', async (req, res) => {
-  const { district, reports } = req.body;
-
   const ai = getGenAI();
-
   if (!ai) {
-    return res.status(500).json({ error: 'Gemini unavailable' });
+    return res.status(503).json({ error: 'The assistant is unavailable: this server has no Gemini API key configured.' });
   }
+
+  const district: string | undefined = req.user.district;
+  const nearby = await listOpenReports(centerForDistrict(district), 10);
+  const reportLines = nearby.map((r: any) =>
+    `- [${r.category}, ${r.urgency} urgency] "${r.title}", ${(r.distanceMeters / 1000).toFixed(1)} km away, ${r.upvotes} upvotes, reported ${timeAgo(r.createdAt)}`
+  ).join('\n');
+
+  const systemInstruction = `You are the assistant inside Community Hero, an app where residents report local problems
+(potholes, broken streetlights, graffiti, waste, leaks, park damage), and neighbors upvote, verify and fix them.
+How the app works, which you may explain:
+- Click the map to report an issue at an exact spot, optionally with a photo (+${POINTS.REPORT_CREATED} points, up to ${MAX_REWARDED_REPORTS_PER_DAY} rewarded reports a day).
+- Upvote (+${POINTS.REPORT_UPVOTED} to the reporter) or verify (+${POINTS.REPORT_VERIFIED}) other people's reports.
+- Resolve a report by uploading a photo of the fix. Gemini compares it with the original photo; a verified fix earns +${POINTS.REPORT_RESOLVED}, except on your own reports.
+- The Mission Planner builds a walking route through the highest-priority open reports nearby.
+- Points can be spent in the Rewards tab.
+The user's neighborhood: ${district || 'not set'}.
+Open reports nearest to them, from the database right now:
+${reportLines || '(none)'}
+Only state facts from this message. If you don't know something, say so. Keep answers short and practical.`;
 
   try {
-    const prompt = `
-Generate a civic action mission.
-
-Return ONLY valid JSON.
-
-{
-  "title":"",
-  "priorityScore":0,
-  "estimatedTime":"",
-  "impact":"",
-  "tasks":[
-    {
-      "title":"",
-      "category":"",
-      "reward":0
-    }
-  ]
-}
-
-Neighborhood:
-${district}
-
-Active Reports:
-${JSON.stringify(reports)}
-
-Use professional civic language.
-
-Mission titles should sound inspiring.
-
-Examples:
-
-Downtown Safety Sweep
-Westside Community Restoration
-Green Corridor Recovery Initiative
-
-Keep impact descriptions concise.
-`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
-    const text = (response.text || '').trim();
-    const mission = JSON.parse(text);
-
-    return res.json(mission);
+    const history = messages.slice(0, -1).map((m: any) => ({
+      role: m.role === 'model' ? 'model' : 'user',
+      parts: [{ text: m.text }],
+    }));
+    // Gemini expects the conversation to start with the user; drop the widget's greeting
+    while (history.length > 0 && history[0].role === 'model') history.shift();
+    const chat = ai.chats.create({ model: GEMINI_MODEL, config: { systemInstruction }, history });
+    const response = await withTimeout(chat.sendMessage({ message: messages[messages.length - 1].text }), 20000);
+    return res.json({ text: response.text });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Mission generation failed' });
+    console.error('Gemini chat error:', err);
+    return res.status(502).json({ error: 'The assistant could not answer right now. Please try again.' });
   }
 });
 
-app.post('/api/ai/mission', async (req, res) => {
-  const { userDistrict, reports } = req.body;
+// Plans a walking route through the open reports most worth visiting near ?lat=&lng=.
+// The route is computed by services/missions.ts; Gemini only writes the short briefing, when configured.
+app.get('/api/missions/plan', protect, async (req: any, res) => {
+  const start = nearFromQuery(req.query);
+  if (!start) {
+    return res.status(400).json({ error: 'lat and lng are required' });
+  }
+  try {
+    const candidates = await Report.aggregate([
+      {
+        $geoNear: {
+          near: { type: 'Point', coordinates: [start.lng, start.lat] },
+          distanceField: 'distanceMeters',
+          maxDistance: MISSION_SEARCH_RADIUS_KM * 1000,
+          query: { status: 'open' },
+          spherical: true,
+        },
+      },
+      { $limit: 200 },
+      {
+        $project: {
+          title: 1, category: 1, urgency: 1, upvotes: 1, createdAt: 1, location: 1,
+          verifications: { $size: '$verifiedBy' },
+        },
+      },
+    ]);
 
-  const ai = getGenAI();
-
-  if (!ai) {
-    return res.json({
-      title: 'Neighborhood Rescue Mission',
-      priorityScore: 87,
-      estimatedTime: '45 mins',
-      impact: 'High',
-      tasks: reports?.slice(0, 3).map((r: any) => ({
+    const mission = planMission(
+      candidates.map((r: any) => ({
+        id: String(r._id),
         title: r.title,
         category: r.category,
-        reward: r.urgency === 'High' ? 150 : 50,
-      })) || [],
-    });
-  }
-
-  try {
-    const prompt = `
-Generate a civic action mission.
-
-Return ONLY valid JSON.
-
-{
-  "title":"",
-  "priorityScore":0,
-  "estimatedTime":"",
-  "impact":"",
-  "tasks":[
-    {
-      "title":"",
-      "category":"",
-      "reward":0
-    }
-  ]
-}
-
-Use professional civic language.
-
-Mission titles should sound inspiring.
-
-Examples:
-
-"Downtown Safety Sweep"
-"Westside Community Restoration"
-"Green Corridor Recovery Initiative"
-
-Keep impact descriptions concise.
-
-Prioritize the most urgent unresolved reports.
-
-Include exact report titles in tasks whenever possible.
-
-Neighborhood: ${userDistrict}
-Active Reports:
-${JSON.stringify(reports)}
-`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: prompt,
-    });
-
-    const text = response.text || '';
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-
-    if (!jsonMatch) {
-      throw new Error('No JSON returned');
+        urgency: r.urgency,
+        upvotes: r.upvotes,
+        verifications: r.verifications,
+        createdAt: r.createdAt,
+        lng: r.location.coordinates[0],
+        lat: r.location.coordinates[1],
+      })),
+      start
+    );
+    if (!mission) {
+      return res.json({ mission: null, searchRadiusKm: MISSION_SEARCH_RADIUS_KM });
     }
 
-    return res.json(JSON.parse(jsonMatch[0]));
+    const briefing = await writeMissionBriefing(mission, req.user.district);
+    res.json({ mission: { ...mission, ...briefing, start }, searchRadiusKm: MISSION_SEARCH_RADIUS_KM });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Mission generation failed' });
+    res.status(500).json({ error: 'Failed to plan a mission' });
+  }
+});
+
+// Recently resolved reports, with the reporter's photo and the fix photo
+app.get('/api/stories', async (req, res) => {
+  try {
+    res.json(await listStories());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load stories' });
+  }
+});
+
+// Neighborhood statistics around ?lat=&lng=, computed from stored reports
+app.get('/api/analytics', async (req: any, res) => {
+  const center = nearFromQuery(req.query);
+  if (!center) {
+    return res.status(400).json({ error: 'lat and lng are required' });
+  }
+  try {
+    res.json(await neighborhoodAnalytics(center));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load analytics' });
   }
 });
 
@@ -789,9 +651,10 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
   if (!report || report.status !== 'open') {
     return res.status(404).json({ error: 'Report not found' });
   }
-  if (String(report.reporter?.id) === String(req.user._id)) {
-    return res.status(403).json({ error: "You can't resolve your own report" });
-  }
+  // Reporters may close their own reports with the same photo check, but earn nothing for it,
+  // so posting a report and "fixing" it can't be used to farm points
+  const isOwnReport = String(report.reporter?.id) === String(req.user._id);
+  const pointsForFix = isOwnReport ? 0 : POINTS.REPORT_RESOLVED;
 
   // Marks the report resolved and pays out. The status check is part of the update,
   // so if two people resolve the same report at once, only one of them gets the points.
@@ -809,7 +672,11 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
 
     logAuditEvent('REPORT_RESOLVED', `Report ${report._id} resolved by ${req.user.email}`, true, req.user.email, req.ip);
     publish({ type: 'report.resolved', id: String(report._id) });
-    return awardPoints(req.user._id, POINTS.REPORT_RESOLVED);
+    if (pointsForFix === 0) {
+      const user = await User.findById(req.user._id).select('points').lean();
+      return user?.points ?? 0;
+    }
+    return awardPoints(req.user._id, pointsForFix);
   };
 
   // Demo mode only: without a Gemini key the photo can't be checked, so by default we refuse
@@ -826,15 +693,8 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
     return res.json({
       success: true,
       message: 'Resolution accepted (simulated verification, demo mode).',
-      auditResult: {
-        success: true,
-        confidenceScore: 94,
-        restorationDetails: details,
-        co2OffsetKg: Math.floor(10 + Math.random() * 25),
-        ecoIndexBoost: Math.floor(4 + Math.random() * 6),
-        safetyScoreIncrease: Math.floor(8 + Math.random() * 7),
-      },
-      heroPointsAwarded: POINTS.REPORT_RESOLVED,
+      auditResult: { success: true, confidenceScore: null, restorationDetails: details, simulated: true },
+      heroPointsAwarded: pointsForFix,
       userSession: { points: finalPoints },
     });
   }
@@ -857,7 +717,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
       Return a JSON response using the specified schema.`;
 
     const aiRes = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
+      model: GEMINI_MODEL,
       contents: { parts: [...(before ? [toPart(before)] : []), toPart(photo), { text: prompt }] },
       config: {
         responseMimeType: 'application/json',
@@ -867,11 +727,8 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
             success: { type: Type.BOOLEAN, description: 'True if image shows the reported issue has been successfully resolved/repaired/cleaned.' },
             confidenceScore: { type: Type.INTEGER, description: 'Confidence score from 0 to 100 on the quality and success of the resolution.' },
             restorationDetails: { type: Type.STRING, description: 'Brief detailed summary of the completed restoration seen in the photo.' },
-            co2OffsetKg: { type: Type.INTEGER, description: 'Estimated carbon offset in kg (range 5 to 45).' },
-            ecoIndexBoost: { type: Type.INTEGER, description: 'Eco-index boost in percentage (range 2 to 12).' },
-            safetyScoreIncrease: { type: Type.INTEGER, description: 'Increase in public safety score percentage (range 5 to 15).' },
           },
-          required: ['success', 'confidenceScore', 'restorationDetails', 'co2OffsetKg', 'ecoIndexBoost', 'safetyScoreIncrease'],
+          required: ['success', 'confidenceScore', 'restorationDetails'],
         },
       },
     });
@@ -886,8 +743,12 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
       return res.json({
         success: true,
         message: 'Resolution verified successfully!',
-        auditResult,
-        heroPointsAwarded: POINTS.REPORT_RESOLVED,
+        auditResult: {
+          success: true,
+          confidenceScore: Number(auditResult.confidenceScore) || null,
+          restorationDetails: String(auditResult.restorationDetails || ''),
+        },
+        heroPointsAwarded: pointsForFix,
         userSession: { points: finalPoints },
       });
     }

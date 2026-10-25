@@ -2,10 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import L from 'leaflet';
-import { Report } from '../types';
+import { Mission, Report } from '../types';
 import { api } from '../lib/api';
 import { assetUrl, placeLabel } from '../config';
 import CameraVerificationModal from './CameraVerificationModal';
+import MissionPanel from './MissionPanel';
+import AnalyticsPanel from './AnalyticsPanel';
 import { toast, errorMessage } from '../lib/toast';
 import { useReportActions } from '../hooks/useReportActions';
 import { POINTS } from '../shared/catalog';
@@ -83,8 +85,8 @@ export default function MapView({
   const [urgencyFilter, setUrgencyFilter] = useState<'All' | 'High' | 'Medium' | 'Low'>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const [mission, setMission] = useState<any>(null);
-const [loadingMission, setLoadingMission] = useState(false);
+  // The planned walking route, drawn on the map while set
+  const [mission, setMission] = useState<Mission | null>(null);
   
   // Submit New Report Modal state
   const [showNewReportModal, setShowNewReportModal] = useState(false);
@@ -96,52 +98,6 @@ const [loadingMission, setLoadingMission] = useState(false);
   const [newReportCategory, setNewReportCategory] = useState('Pothole');
 
 
-  const generateMission = () => {
-  const missions = [
-    {
-      title: "Green Corridor Recovery Initiative",
-      priorityScore: 94,
-      estimatedTime: "2 Hours",
-      impact: "Improve neighborhood cleanliness and public safety."
-    },
-    {
-      title: "Downtown Safety Sweep",
-      priorityScore: 88,
-      estimatedTime: "1.5 Hours",
-      impact: "Reduce hazards around busy intersections."
-    },
-    {
-      title: "Community Infrastructure Rescue",
-      priorityScore: 91,
-      estimatedTime: "3 Hours",
-      impact: "Address multiple high-priority citizen reports."
-    }
-  ];
-
-  const selected =
-    missions[Math.floor(Math.random() * missions.length)];
-
-  setMission({
-    ...selected,
-    tasks: [
-      {
-        title: "Verify local reports",
-        category: "Verification",
-        reward: 20
-      },
-      {
-        title: "Capture evidence photos",
-        category: "Documentation",
-        reward: 15
-      },
-      {
-        title: "Coordinate community response",
-        category: "Action",
-        reward: 30
-      }
-    ]
-  });
-};
   // The map opens on the user's neighborhood
   const { lat: centerLat, lng: centerLng } = centerForDistrict(userDistrict);
   const mapCenter: [number, number] = [centerLat, centerLng];
@@ -159,27 +115,15 @@ const [loadingMission, setLoadingMission] = useState(false);
 
   // Map Active Popup issue
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
-  const [smartScanVerified, setSmartScanVerified] = useState(false);
   const [resolvingReport, setResolvingReport] = useState<Report | null>(null);
-
-  // Weekly Issue trends active bar chart day selection
-  const [activeChartDay, setActiveChartDay] = useState<'Mon' | 'Tue' | 'Wed' | 'Thu' | 'Fri' | 'Sat' | 'Sun'>('Thu');
 
   // Map refs for Leaflet instances
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
   const selectionMarkerRef = useRef<L.Marker | null>(null);
-
-  const chartData = {
-    Mon: { count: 12, percentage: '40%', active: false },
-    Tue: { count: 18, percentage: '60%', active: false },
-    Wed: { count: 10, percentage: '35%', active: false },
-    Thu: { count: 24, percentage: '80%', active: true },
-    Fri: { count: 15, percentage: '50%', active: false },
-    Sat: { count: 6, percentage: '20%', active: false },
-    Sun: { count: 9, percentage: '30%', active: false }
-  };
+  const routeLayerRef = useRef<L.LayerGroup | null>(null);
+  const fittedMissionRef = useRef<Mission | null>(null);
 
   // Synchronize Leaflet map lifecycle
   useEffect(() => {
@@ -190,6 +134,8 @@ const [loadingMission, setLoadingMission] = useState(false);
         mapInstanceRef.current = null;
         markersGroupRef.current = null;
         selectionMarkerRef.current = null;
+        routeLayerRef.current = null;
+        fittedMissionRef.current = null;
       }
       return;
     }
@@ -265,7 +211,6 @@ const [loadingMission, setLoadingMission] = useState(false);
         
         marker.on('click', () => {
           setActiveReportId(rep.id);
-          setSmartScanVerified(false);
           map.panTo(latLng);
         });
 
@@ -278,6 +223,42 @@ const [loadingMission, setLoadingMission] = useState(false);
       });
     }
   }, [innerTab, reports, activeReportId]);
+
+  // Draw the planned mission: a dashed line from the start through each numbered stop
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (innerTab !== 'map' || !map) return;
+
+    routeLayerRef.current?.remove();
+    routeLayerRef.current = null;
+    if (!mission) return;
+
+    const layer = L.layerGroup().addTo(map);
+    const path: L.LatLngExpression[] = [[mission.start.lat, mission.start.lng], ...mission.stops.map((s) => [s.lat, s.lng] as L.LatLngExpression)];
+    L.polyline(path, { color: '#7c3aed', weight: 4, opacity: 0.85, dashArray: '8 8' }).addTo(layer);
+    L.circleMarker([mission.start.lat, mission.start.lng], { radius: 7, color: '#ffffff', weight: 3, fillColor: '#7c3aed', fillOpacity: 1 })
+      .bindTooltip('Start')
+      .addTo(layer);
+    mission.stops.forEach((stop, idx) => {
+      L.marker([stop.lat, stop.lng], {
+        icon: L.divIcon({
+          html: `<div style="width:22px;height:22px;border-radius:9999px;background:#7c3aed;color:#fff;font:800 11px sans-serif;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35)">${idx + 1}</div>`,
+          className: 'mission-stop',
+          iconSize: [22, 22],
+          iconAnchor: [11, 30],
+        }),
+        zIndexOffset: 1000,
+        interactive: false,
+      }).addTo(layer);
+    });
+    routeLayerRef.current = layer;
+
+    // Zoom to the route once per new mission, not on every re-render
+    if (fittedMissionRef.current !== mission) {
+      fittedMissionRef.current = mission;
+      map.fitBounds(L.latLngBounds(path as L.LatLngTuple[]), { padding: [60, 60], maxZoom: 16 });
+    }
+  }, [innerTab, mission]);
 
   // Close the report form with the Escape key
   useEffect(() => {
@@ -365,7 +346,7 @@ const [loadingMission, setLoadingMission] = useState(false);
   });
 
   return (
-    <div className="w-full px-4 py-6">
+    <div className="w-full px-4 py-6 space-y-6">
       
       {/* Styles for pulse animations inside leaflet marker */}
       <style>{`
@@ -399,7 +380,7 @@ const [loadingMission, setLoadingMission] = useState(false);
           <p className="font-sans text-sm text-slate-500 max-w-2xl leading-relaxed">
             {innerTab === 'map' && "Interactive tactical community map. Drag, zoom, track reports, or click anywhere to drop a new issue pin."}
             {innerTab === 'feed' && "Real-time updates from your local heroes. Verify reports to help keep our community data clean."}
-            {innerTab === 'analytics' && "Real-time insights and predictive forecasting for our neighborhoods."}
+            {innerTab === 'analytics' && "Open and resolved reports around your neighborhood, straight from the database."}
           </p>
         </div>
 
@@ -431,102 +412,14 @@ const [loadingMission, setLoadingMission] = useState(false);
           </button>
         </div>
       </div>
-<div className="bg-gradient-to-r from-violet-600 to-blue-600 rounded-2xl p-5 shadow-xl mb-6 text-white">
-  <div className="flex justify-between items-center">
-    <div>
-      <h3 className="text-lg font-black">
-        AI Mission Commander
-      </h3>
-
-      <p className="text-sm text-blue-100 mt-1">
-        Generate an optimized community action plan from live reports.
-      </p>
-    </div>
-
-    <button
-      onClick={generateMission}
-      disabled={loadingMission}
-      className="bg-white text-blue-600 px-5 py-3 rounded-xl font-bold hover:scale-105 transition-all"
-    >
-      {loadingMission
-        ? "Analyzing..."
-        : "Generate Mission"}
-    </button>
-  </div>
-</div>
-
-{mission && (
-  <div className="bg-white rounded-3xl shadow-xl border border-slate-100 p-6 mb-6">
-
-    <div className="flex justify-between items-center mb-5">
-      <div>
-        <p className="text-xs uppercase tracking-widest text-violet-600 font-bold">
-          AI Generated Mission
-        </p>
-
-        <h2 className="text-2xl font-black text-slate-800">
-          {mission.title}
-        </h2>
-      </div>
-
-      <div className="text-right">
-        <div className="text-3xl font-black text-green-600">
-          {mission.priorityScore}
-        </div>
-        <div className="text-xs text-slate-500">
-          Priority Score
-        </div>
-      </div>
-    </div>
-
-    <div className="grid grid-cols-2 gap-4 mb-6">
-      <div className="bg-slate-50 rounded-xl p-4">
-        <div className="text-xs text-slate-500">
-          Estimated Time
-        </div>
-        <div className="font-bold">
-          {mission.estimatedTime}
-        </div>
-      </div>
-
-      <div className="bg-slate-50 rounded-xl p-4">
-        <div className="text-xs text-slate-500">
-          Community Impact
-        </div>
-        <div className="font-bold">
-          High
-        </div>
-      </div>
-    </div>
-
-    <p className="text-slate-600 mb-6">
-      {mission.impact}
-    </p>
-
-    <div className="space-y-3">
-      {mission.tasks?.map((task: any, idx: number) => (
-        <div
-          key={idx}
-          className="flex justify-between items-center bg-slate-50 rounded-xl p-4"
-        >
-          <div>
-            <div className="font-semibold">
-              {task.title}
-            </div>
-            <div className="text-sm text-slate-500">
-              {task.category}
-            </div>
-          </div>
-
-          <div className="font-bold text-violet-600">
-            +{task.reward}
-          </div>
-        </div>
-      ))}
-    </div>
-  </div>
-)}
-
+      {innerTab === 'map' && (
+        <MissionPanel
+          userDistrict={userDistrict}
+          mission={mission}
+          setMission={setMission}
+          onSelectStop={setActiveReportId}
+        />
+      )}
 
       {/* -------------------- TAB 1: TACTICAL MAP -------------------- */}
       {innerTab === 'map' && (
@@ -590,52 +483,20 @@ const [loadingMission, setLoadingMission] = useState(false);
                       {rep.description}
                     </p>
 
-                    {/* AI Deduplication Nudge */}
-                    {rep.id === 'rep-1' && !smartScanVerified && (
-                      <div className="bg-blue-50/50 border border-blue-100 rounded-xl p-3.5 relative overflow-hidden group">
-                        <div className="flex items-start gap-3 relative z-10">
-                          <div className="w-7 h-7 rounded-full bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-sm">
-                            <span className="material-symbols-outlined text-sm">smart_toy</span>
-                          </div>
-                          <div className="flex-1 space-y-2">
-                            <p className="font-sans text-[11px] text-slate-700 leading-snug">
-                              <span className="text-blue-600 font-bold">Smart Scan:</span> Is this the same pothole reported 15m away by Marcus Thompson?
-                            </p>
-                            <div className="flex gap-2 pt-1">
-                              <button 
-                                onClick={() => {
-                                  setSmartScanVerified(true);
-                                }}
-                                className="flex-1 bg-blue-600 text-white py-1.5 px-3 rounded-lg font-sans text-[10px] font-bold hover:bg-blue-700 hover:shadow-sm transition-all active:scale-95 flex items-center justify-center gap-1 cursor-pointer focus:outline-none"
-                              >
-                                <span className="material-symbols-outlined text-[12px]">check_circle</span> Yes, Merge
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  setSmartScanVerified(true);
-                                }}
-                                className="flex-1 bg-white text-slate-600 border border-slate-200 py-1.5 px-3 rounded-lg font-sans text-[10px] font-bold hover:bg-slate-50 transition-all active:scale-95 text-center cursor-pointer focus:outline-none"
-                              >
-                                No, Separate
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {rep.id === 'rep-1' && smartScanVerified && (
-                      <div className="bg-teal-50 border border-teal-100 rounded-xl p-2.5 text-center text-[10px] font-bold text-teal-600 flex items-center justify-center gap-1">
-                        <span className="material-symbols-outlined text-xs">check_circle</span>
-                        Thanks! Marked as a likely duplicate.
-                      </div>
-                    )}
-
                     <div className="pt-2 border-t border-slate-50 flex justify-between items-center gap-2">
                       {rep.isMine ? (
-                        <p className="flex-1 text-center text-[11px] font-semibold text-slate-400 py-2">
-                          This is your report. Neighbors can verify and resolve it.
-                        </p>
+                        <>
+                          <p className="flex-1 text-[11px] font-semibold text-slate-400 leading-snug">
+                            Your report. Fixed it yourself? Close it with a photo (no points).
+                          </p>
+                          <button
+                            onClick={() => setResolvingReport(rep)}
+                            className="py-2 px-3 bg-slate-800 text-white rounded-xl font-sans text-xs font-bold hover:bg-slate-900 transition-all flex items-center justify-center gap-1 cursor-pointer focus:outline-none shrink-0"
+                          >
+                            <span className="material-symbols-outlined text-xs">photo_camera</span>
+                            Mark fixed
+                          </button>
+                        </>
                       ) : (
                         <>
                           <button
@@ -832,137 +693,7 @@ const [loadingMission, setLoadingMission] = useState(false);
 
       {/* -------------------- TAB 3: IMPACT ANALYTICS -------------------- */}
       {innerTab === 'analytics' && (
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-8">
-          
-          {/* Bento Stats row */}
-          <div className="md:col-span-12 grid grid-cols-1 sm:grid-cols-3 gap-6">
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-sm">
-              <span className="material-symbols-outlined text-blue-600 text-3xl mb-3 block">verified_user</span>
-              <p className="font-sans text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Global Health Index</p>
-              <h2 className="font-sans text-3xl font-black text-slate-800">92.4%</h2>
-              <p className="font-sans text-[10px] font-bold text-teal-600 flex items-center gap-1 mt-1">
-                <span className="material-symbols-outlined text-sm">trending_up</span> +1.8% from last month
-              </p>
-            </div>
-
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-sm">
-              <span className="material-symbols-outlined text-green-600 text-3xl mb-3 block">eco</span>
-              <p className="font-sans text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">CO2 Footprint Offset</p>
-              <h2 className="font-sans text-3xl font-black text-slate-800">452 kg</h2>
-              <p className="font-sans text-[10px] font-bold text-teal-600 flex items-center gap-1 mt-1">
-                <span className="material-symbols-outlined text-sm">trending_up</span> Active carbon capture growth
-              </p>
-            </div>
-
-            <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-sm">
-              <span className="material-symbols-outlined text-purple-600 text-3xl mb-3 block">speed</span>
-              <p className="font-sans text-[10px] text-slate-400 font-bold uppercase tracking-wider mb-1">Avg Resolution Speed</p>
-              <h2 className="font-sans text-3xl font-black text-slate-800">14.2 hrs</h2>
-              <p className="font-sans text-[10px] font-bold text-teal-600 flex items-center gap-1 mt-1">
-                <span className="material-symbols-outlined text-sm">check_circle</span> Faster than city average
-              </p>
-            </div>
-          </div>
-
-          {/* Bar Chart: Weekly Issue Trends */}
-          <div className="md:col-span-8 bg-white rounded-2xl p-8 border border-slate-100 shadow-sm">
-            <div className="flex items-center justify-between mb-8">
-              <h3 className="font-sans text-sm font-bold text-slate-800">Weekly Issue Trends</h3>
-              <select className="bg-slate-50 rounded-full border border-slate-200 text-slate-600 font-sans text-[10px] font-bold py-1.5 pl-3 pr-8 focus:ring-2 focus:ring-blue-600 focus:outline-none cursor-pointer">
-                <option>This Week</option>
-                <option>Last Week</option>
-                <option>This Month</option>
-              </select>
-            </div>
-
-            {/* Interactive Bar Chart Representation */}
-            <div className="h-52 flex items-end justify-between gap-4 relative pt-4">
-              <div className="absolute inset-x-0 top-0 bottom-6 flex flex-col justify-between pointer-events-none border-b border-slate-100 pb-2">
-                <div className="w-full h-px bg-slate-50"></div>
-                <div className="w-full h-px bg-slate-50"></div>
-                <div className="w-full h-px bg-slate-50"></div>
-                <div className="w-full h-px bg-slate-50"></div>
-              </div>
-
-              {(Object.keys(chartData) as Array<keyof typeof chartData>).map((day) => {
-                const info = chartData[day];
-                const isActive = activeChartDay === day;
-                return (
-                  <div 
-                    key={day} 
-                    onClick={() => setActiveChartDay(day)}
-                    className="w-full flex flex-col items-center gap-2 group relative z-10 cursor-pointer"
-                  >
-                    <div 
-                      className={`w-full md:w-10 rounded-t-md transition-all duration-300 relative ${
-                        isActive 
-                          ? 'bg-blue-600 shadow-md scale-102' 
-                          : 'bg-slate-100 group-hover:bg-blue-200'
-                      }`}
-                      style={{ height: `${info.count * 6}px`, minHeight: '12px' }}
-                    >
-                      <div className={`absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-900 text-white px-2 py-0.5 rounded text-[9px] font-bold transition-opacity whitespace-nowrap pointer-events-none ${
-                        isActive ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                      }`}>
-                        {info.count} Issues
-                      </div>
-                    </div>
-                    <span className={`font-sans text-[10px] font-bold ${isActive ? 'text-blue-600' : 'text-slate-400'}`}>
-                      {day}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* AI Predictive Forecast Card */}
-          <div className="md:col-span-4 bg-white rounded-2xl overflow-hidden flex flex-col border border-slate-100 shadow-sm">
-            <div className="bg-gradient-to-r from-blue-50 to-indigo-50/50 p-6 text-slate-800 relative overflow-hidden border-b border-slate-100">
-              <span className="material-symbols-outlined absolute right-4 top-4 text-5xl opacity-10">magic_button</span>
-              <h3 className="font-sans text-sm font-bold mb-1 flex items-center gap-1">
-                <span className="material-symbols-outlined text-base align-middle">psychology</span>
-                AI Forecast
-              </h3>
-              <p className="font-sans text-[10px] text-slate-500">Predicted Neighborhood Issues in Next 24h</p>
-            </div>
-
-            <div className="p-6 flex-1 flex flex-col gap-4">
-              {/* Forecast Item 1 */}
-              <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-100 flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-red-100 text-red-700 flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-sm">water_drop</span>
-                </div>
-                <div className="space-y-1">
-                  <h4 className="font-sans text-xs font-bold text-slate-800">Centennial Sprinkler Leak</h4>
-                  <p className="font-sans text-[10px] text-slate-500 leading-relaxed">
-                    High probability based on localized pressure logs and aging infrastructure sensors.
-                  </p>
-                  <span className="inline-block text-[9px] font-bold text-red-600 bg-red-50 px-2 py-0.5 rounded-full border border-red-100">
-                    85% Likelihood
-                  </span>
-                </div>
-              </div>
-
-              {/* Forecast Item 2 */}
-              <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-100 flex items-start gap-3">
-                <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
-                  <span className="material-symbols-outlined text-sm">delete</span>
-                </div>
-                <div className="space-y-1">
-                  <h4 className="font-sans text-xs font-bold text-slate-800">Overflowing Bins near Park</h4>
-                  <p className="font-sans text-[10px] text-slate-500 leading-relaxed">
-                    Expected rise in central waste volume due to upcoming weekend Farmers Market event.
-                  </p>
-                  <span className="inline-block text-[9px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">
-                    62% Likelihood
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
+        <AnalyticsPanel center={{ lat: centerLat, lng: centerLng }} reports={reports} />
       )}
 
       {/* Submit New Report Modal Overlay.

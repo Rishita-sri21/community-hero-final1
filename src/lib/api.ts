@@ -1,4 +1,4 @@
-import { Report } from '../types';
+import { Mission, NeighborhoodAnalytics, Report, Story } from '../types';
 import { API_URL } from '../config';
 
 export interface ChatMessage {
@@ -11,11 +11,10 @@ export interface ResolveResponse {
   message?: string;
   auditResult?: {
     success: boolean;
-    confidenceScore: number;
+    // Null when the photo wasn't checked by AI (demo mode)
+    confidenceScore: number | null;
     restorationDetails: string;
-    co2OffsetKg: number;
-    ecoIndexBoost: number;
-    safetyScoreIncrease: number;
+    simulated?: boolean;
   };
   heroPointsAwarded?: number;
   userSession?: {
@@ -182,8 +181,23 @@ export const api = {
     return post<{ success: boolean; user: any }>('/api/users/update-district', { district }, 'Failed to update district');
   },
 
-  chatWithAssistant(messages: ChatMessage[], userDistrict?: string, activeReports?: any[]) {
-    return post<{ text: string }>('/api/assistant/chat', { messages, userDistrict, activeReports }, 'Failed to chat with assistant');
+  // The server looks up the reports near the user itself
+  chatWithAssistant(messages: ChatMessage[]) {
+    return post<{ text: string }>('/api/assistant/chat', { messages }, 'Failed to chat with assistant');
+  },
+
+  planMission(start: { lat: number; lng: number }) {
+    return request<{ mission: Mission | null; searchRadiusKm: number }>(
+      `/api/missions/plan?lat=${start.lat}&lng=${start.lng}`, {}, 'Failed to plan a mission'
+    );
+  },
+
+  getStories() {
+    return request<Story[]>('/api/stories', {}, 'Failed to load stories');
+  },
+
+  getAnalytics(center: { lat: number; lng: number }) {
+    return request<NeighborhoodAnalytics>(`/api/analytics?lat=${center.lat}&lng=${center.lng}`, {}, 'Failed to load analytics');
   },
 
   getAuditLogs() {
