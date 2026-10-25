@@ -5,6 +5,8 @@ import app from '../app';
 import User from '../models/User';
 import Report from '../models/Report';
 import { generateToken } from '../utils/jwt';
+import Job from '../models/Job';
+import { resolveAndWait } from './helpers/jobs';
 
 // Mission planning, analytics, stories and the assistant, against a real MongoDB (see points.test.ts).
 const MONGO_URI = process.env.TEST_MONGODB_URI;
@@ -47,7 +49,7 @@ describe.skipIf(!MONGO_URI)('insights (MongoDB)', () => {
   });
 
   beforeEach(async () => {
-    await Promise.all([User.deleteMany({}), Report.deleteMany({})]);
+    await Promise.all([User.deleteMany({}), Report.deleteMany({}), Job.deleteMany({})]);
     delete process.env.SIMULATE_AI_VERIFICATION;
   });
 
@@ -137,7 +139,7 @@ describe.skipIf(!MONGO_URI)('insights (MongoDB)', () => {
         .set(auth(reporter.token))
         .send({ title: 'Broken bench', description: 'Snapped slats', lat: 40.7, lng: -74, image: TINY_JPEG_URL });
       const reportId = created.body.report.id;
-      await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId, image: TINY_JPEG_URL });
+      await resolveAndWait(app, fixer.token, reportId, TINY_JPEG_URL);
 
       const res = await request(app).get('/api/stories');
 

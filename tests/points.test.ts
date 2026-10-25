@@ -6,6 +6,8 @@ import User from '../models/User';
 import Report from '../models/Report';
 import { generateToken } from '../utils/jwt';
 import { MAX_REWARDED_REPORTS_PER_DAY, POINTS } from '../src/shared/catalog';
+import Job from '../models/Job';
+import { resolveAndWait } from './helpers/jobs';
 
 // These tests need a real MongoDB because the points rules rely on atomic MongoDB updates.
 // Report storage, photos and location search are covered in reports.test.ts.
@@ -46,7 +48,7 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
   });
 
   beforeEach(async () => {
-    await Promise.all([User.deleteMany({}), Report.deleteMany({})]);
+    await Promise.all([User.deleteMany({}), Report.deleteMany({}), Job.deleteMany({})]);
     delete process.env.SIMULATE_AI_VERIFICATION;
   });
 
@@ -137,10 +139,11 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
       const fixer = await createUser('Jo');
       const reportId = (await createReport(reporter.token)).body.report.id;
 
-      const res = await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId, image: photo });
-      expect(res.status).toBe(200);
-      expect(res.body.heroPointsAwarded).toBe(POINTS.REPORT_RESOLVED);
-      expect(res.body.userSession.points).toBe(POINTS.REPORT_RESOLVED);
+      const res = await resolveAndWait(app, fixer.token, reportId, photo);
+      expect(res.status).toBe(202);
+      expect(res.job.status).toBe('done');
+      expect(res.body).toMatchObject({ success: true, heroPointsAwarded: POINTS.REPORT_RESOLVED, points: POINTS.REPORT_RESOLVED });
+      expect(res.body.auditResult).toMatchObject({ simulated: true, confidenceScore: null });
 
       const again = await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId, image: photo });
       expect(again.status).toBe(404);
@@ -153,10 +156,8 @@ describe.skipIf(!MONGO_URI)('points rules (MongoDB)', () => {
       const reportId = (await createReport(reporter.token)).body.report.id;
       const before = await pointsOf(reporter.user);
 
-      const res = await request(app).post('/api/reports/resolve').set(auth(reporter.token)).send({ reportId, image: photo });
-      expect(res.status).toBe(200);
-      expect(res.body.heroPointsAwarded).toBe(0);
-      expect(res.body.userSession.points).toBe(before);
+      const res = await resolveAndWait(app, reporter.token, reportId, photo);
+      expect(res.body).toMatchObject({ success: true, heroPointsAwarded: 0, points: before });
       expect(await pointsOf(reporter.user)).toBe(before);
     });
   });

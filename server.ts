@@ -8,6 +8,7 @@ import User from './models/User';
 import connectDB from './config/db';
 import Report from './models/Report';
 import { seedDemoReports } from './services/reports';
+import { startWorker } from './services/jobs';
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -113,16 +114,23 @@ async function startServer() {
     console.log(`Server running on port ${PORT}`);
   });
 
+  // Runs queued background jobs (AI photo checks, report triage) in this process.
+  // RUN_JOB_WORKER=false turns it off, e.g. for a web-only instance when a separate worker runs.
+  const worker = process.env.RUN_JOB_WORKER === 'false' ? null : startWorker();
+  if (worker) console.log(`Job worker ${worker.id} started`);
+
   // Hosts send SIGTERM before replacing the server during a deploy. Stop taking new
-  // connections, close the database cleanly, and give up after 10 seconds, since open
-  // live-update streams would otherwise keep the server alive.
+  // connections and jobs, let running jobs finish, close the database cleanly, and give up
+  // after 10 seconds, since open live-update streams would otherwise keep the server alive.
+  // A job cut off by the deadline isn't lost: its lease runs out and another worker retries it.
   const shutdown = (signal: string) => {
     console.log(`${signal} received, shutting down`);
     setTimeout(() => process.exit(0), 10_000).unref();
-    server.close(() => {
+    const httpClosed = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeAllConnections?.();
+    Promise.all([httpClosed, worker?.stop()]).finally(() => {
       mongoose.disconnect().finally(() => process.exit(0));
     });
-    server.closeAllConnections?.();
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));
   process.once('SIGINT', () => shutdown('SIGINT'));

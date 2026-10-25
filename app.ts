@@ -1,5 +1,4 @@
 import express from 'express';
-import { Type } from '@google/genai';
 import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import User from './models/User';
@@ -21,12 +20,20 @@ import { planMission } from './services/missions';
 import { listSquads, userStats } from './services/squads';
 import { listNotifications, markAllRead, notifyReporter } from './services/notifications';
 import { neighborhoodAnalytics } from './services/analytics';
-import { findImage, imageErrorMessage, parseDataUrlImage, readStoredImage, saveDataUrlImage, storeImage } from './services/images';
+import { logAuditEvent } from './services/audit';
+import Job, { type JobDoc } from './models/Job';
+import { enqueue, queueStats, retryFailedJob, toPublicJob } from './services/jobs';
+import { JOB_TYPES, registerJobHandlers } from './services/jobHandlers';
+import { getVision } from './services/vision';
+import { findImage, imageErrorMessage, parseDataUrlImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
 dotenv.config();
 
 const app = express();
+
+// The background jobs this server can run (the worker itself is started by server.ts)
+registerJobHandlers();
 
 // Render, Vercel and most hosts put a proxy in front of the app. Trusting one proxy hop makes
 // req.ip the visitor's address instead of the proxy's, so the login rate limit is per visitor
@@ -52,16 +59,6 @@ app.use((req, res, next) => {
 // Photos arrive as base64 inside JSON: a 3 MB photo is about 4 MB of text
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
-
-type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_EXPORT';
-
-// Records a security-relevant event in MongoDB. Never awaited by callers and never throws:
-// a failed log write must not fail the request that triggered it.
-function logAuditEvent(event: AuditEvent, message: string, success: boolean, userEmail?: string, ipAddress?: string) {
-  AuditLog.create({ event, message, success, userEmail, ipAddress }).catch((e) => {
-    console.error('Failed to write audit event:', e);
-  });
-}
 
 // Sliding-window rate limiter for auth routes
 const authAttempts: Record<string, { count: number; lastAttempt: number }> = {};
@@ -438,45 +435,18 @@ app.post('/api/reports', protect, async (req: any, res) => {
     image = saved.url;
   }
 
-  const ai = getGenAI();
-
-  let autoCategory = CATEGORIES.includes(reportData.category) ? reportData.category : 'General';
-  let urgency = URGENCIES.includes(reportData.urgency) ? reportData.urgency : 'Medium';
-
-  // AI-powered categorization and details enrichment
-  if (ai) {
-    try {
-      const prompt = `You are a municipal civil engineer. Categorize and analyze this citizen report title: "${reportData.title}" and description: "${reportData.description}".
-      Respond in JSON format with these exact fields:
-      - category: One of "Pothole", "Graffiti", "Streetlight", "Park Maintenance", "Waste Management", "Water Leakage"
-      - urgency: One of "High", "Medium", "Low"
-      - analysis: A single, brief, professional sentence detailing why this is categorized so and what municipal resources should be deployed.
-      `;
-
-      const aiRes = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              category: { type: Type.STRING },
-              urgency: { type: Type.STRING },
-              analysis: { type: Type.STRING },
-            },
-            required: ['category', 'urgency', 'analysis'],
-          },
-        },
-      });
-
-      // The model's answer is untrusted input too: only accept values from the allowed lists
-      const parsed = JSON.parse(aiRes.text || '{}');
-      if (CATEGORIES.includes(parsed.category)) autoCategory = parsed.category;
-      if (URGENCIES.includes(parsed.urgency)) urgency = parsed.urgency;
-    } catch (err) {
-      console.warn('AI categorization failed, using default values:', err);
-    }
+  // "auto" (or nothing) leaves the field to the background triage job, which fills it in
+  // a moment later; until then the report shows a placeholder value
+  const autoFields: Array<'category' | 'urgency'> = [];
+  let category = reportData.category;
+  if (!CATEGORIES.includes(category)) {
+    autoFields.push('category');
+    category = 'General';
+  }
+  let urgency = reportData.urgency;
+  if (!URGENCIES.includes(urgency)) {
+    autoFields.push('urgency');
+    urgency = 'Medium';
   }
 
   const userId = req.user._id;
@@ -486,13 +456,20 @@ app.post('/api/reports', protect, async (req: any, res) => {
     reporter: { id: userId, name: req.user.name, avatar: req.user.avatar },
     title: reportData.title.trim(),
     description: reportData.description.trim(),
-    category: autoCategory,
+    category,
     urgency,
     district: typeof reportData.district === 'string' ? reportData.district : req.user.district,
     locationDetails: typeof reportData.locationDetails === 'string' ? reportData.locationDetails : undefined,
     location: { type: 'Point', coordinates: [reportData.lng, reportData.lat] },
-    icon: iconForCategory(autoCategory),
+    icon: iconForCategory(category),
     image,
+    triage: { status: 'pending', autoFields },
+  });
+
+  // Category and urgency from the photo and text, in the background, so posting stays fast.
+  // If queueing fails the report still stands, with the reporter's own choices.
+  enqueue(JOB_TYPES.TRIAGE_REPORT, { reportId: String(report._id) }, { createdBy: userId }).catch((err) => {
+    console.error(`Could not queue triage for report ${report._id}:`, err);
   });
 
   logAuditEvent('REPORT_CREATED', `Report ${report._id} created by ${req.user.email}`, true, req.user.email, req.ip);
@@ -676,10 +653,10 @@ app.get('/api/analytics', async (req: any, res) => {
   }
 });
 
-// Resolve reported issue via AI Multi-Modal Vision Audit
+// Submits a photo of a fix. The photo is checked in the background (job "verify-fix"), so this
+// answers 202 at once with a job id; the app polls GET /api/jobs/:id for the outcome.
 app.post('/api/reports/resolve', protect, async (req: any, res) => {
   const { reportId, image } = req.body;
-  const ai = getGenAI();
 
   if (!reportId || typeof image !== 'string' || !image) {
     return res.status(400).json({ error: 'Missing reportId or image' });
@@ -689,121 +666,40 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
     return res.status(400).json({ success: false, message: imageErrorMessage(photo.reason) });
   }
 
-  const report = isValidObjectId(reportId) ? await Report.findById(reportId) : null;
+  const report = isValidObjectId(reportId) ? await Report.findById(reportId).select('status').lean() : null;
   if (!report || report.status !== 'open') {
     return res.status(404).json({ error: 'Report not found' });
   }
-  // Reporters may close their own reports with the same photo check, but earn nothing for it,
-  // so posting a report and "fixing" it can't be used to farm points
-  const isOwnReport = String(report.reporter?.id) === String(req.user._id);
-  const pointsForFix = isOwnReport ? 0 : POINTS.REPORT_RESOLVED;
-
-  // Marks the report resolved and pays out. The status check is part of the update,
-  // so if two people resolve the same report at once, only one of them gets the points.
-  const completeResolution = async (details: string) => {
-    const claimed = await Report.findOneAndUpdate(
-      { _id: report._id, status: 'open' },
-      { $set: { status: 'resolved', resolution: { by: req.user._id, at: new Date(), details } } },
-      { returnDocument: 'after' }
-    );
-    if (!claimed) return null; // someone else resolved it while we were waiting
-
-    // Keep the fix photo with the report, so the resolution can be reviewed later
-    const photoUrl = await storeImage(photo, req.user._id);
-    await Report.updateOne({ _id: report._id }, { $set: { 'resolution.image': photoUrl } });
-
-    logAuditEvent('REPORT_RESOLVED', `Report ${report._id} resolved by ${req.user.email}`, true, req.user.email, req.ip);
-    publish({ type: 'report.resolved', id: String(report._id) });
-    notifyReporter('resolved', report, req.user);
-    if (pointsForFix === 0) {
-      const user = await User.findById(req.user._id).select('points').lean();
-      return user?.points ?? 0;
-    }
-    return awardPoints(req.user._id, pointsForFix);
-  };
-
-  // Demo mode only: without a Gemini key the photo can't be checked, so by default we refuse
-  // rather than pretend. SIMULATE_AI_VERIFICATION=true accepts any photo, for demos.
-  if (!ai) {
-    if (process.env.SIMULATE_AI_VERIFICATION !== 'true') {
-      return res.status(503).json({ success: false, message: 'Photo verification is unavailable right now. Please try again later.' });
-    }
-    const details = `Simulated verification of: "${report.title}".`;
-    const finalPoints = await completeResolution(details);
-    if (finalPoints === null) {
-      return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
-    }
-    return res.json({
-      success: true,
-      message: 'Resolution accepted (simulated verification, demo mode).',
-      auditResult: { success: true, confidenceScore: null, restorationDetails: details, simulated: true },
-      heroPointsAwarded: pointsForFix,
-      userSession: { points: finalPoints },
-    });
+  // Without Gemini the photo can't be checked, so we refuse rather than pretend
+  // (unless SIMULATE_AI_VERIFICATION=true, for demos)
+  if (!getVision().checkFix) {
+    return res.status(503).json({ success: false, message: 'Photo verification is unavailable right now. Please try again later.' });
   }
 
   try {
-    // When the reporter uploaded a photo of the problem, the AI compares before and after
-    // instead of judging the fix photo on its own, which makes unrelated photos easy to spot.
-    const before = report.image ? await readStoredImage(report.image) : null;
-    const toPart = (img: { contentType: string; data: Buffer }) => ({
-      inlineData: { mimeType: img.contentType, data: img.data.toString('base64') },
-    });
-
-    const prompt = `You are a Municipal Civil Integrity Auditor. Decide whether the AFTER photo shows the following reported issue resolved, cleaned up or fully repaired:
-      Report Title: "${report.title}"
-      Report Description: "${report.description}"
-      ${before
-        ? 'The first image is the BEFORE photo the resident took of the problem. The second image is the AFTER photo. Set success to true only if the AFTER photo plausibly shows the same place as the BEFORE photo, with the problem fixed.'
-        : 'The only image is the AFTER photo. Set success to true only if it clearly shows the kind of place described, with the problem fixed.'}
-      If the AFTER photo is unrelated to the report (a screenshot, a person, an indoor scene, a different kind of place) or the problem is still visible, set success to false and explain why in restorationDetails.
-      Return a JSON response using the specified schema.`;
-
-    const aiRes = await ai.models.generateContent({
-      model: GEMINI_MODEL,
-      contents: { parts: [...(before ? [toPart(before)] : []), toPart(photo), { text: prompt }] },
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            success: { type: Type.BOOLEAN, description: 'True if image shows the reported issue has been successfully resolved/repaired/cleaned.' },
-            confidenceScore: { type: Type.INTEGER, description: 'Confidence score from 0 to 100 on the quality and success of the resolution.' },
-            restorationDetails: { type: Type.STRING, description: 'Brief detailed summary of the completed restoration seen in the photo.' },
-          },
-          required: ['success', 'confidenceScore', 'restorationDetails'],
-        },
-      },
-    });
-
-    const auditResult = JSON.parse(aiRes.text || '{}');
-
-    if (auditResult.success === true) {
-      const finalPoints = await completeResolution(String(auditResult.restorationDetails || ''));
-      if (finalPoints === null) {
-        return res.status(409).json({ success: false, message: 'This issue was already resolved.' });
-      }
-      return res.json({
-        success: true,
-        message: 'Resolution verified successfully!',
-        auditResult: {
-          success: true,
-          confidenceScore: Number(auditResult.confidenceScore) || null,
-          restorationDetails: String(auditResult.restorationDetails || ''),
-        },
-        heroPointsAwarded: pointsForFix,
-        userSession: { points: finalPoints },
-      });
-    }
-
-    return res.json({
-      success: false,
-      message: auditResult.restorationDetails || 'Civic Vision Audit was unable to verify the resolution. Please capture a clearer image directly showing the completed repair.',
-    });
+    // The job gets a reference to the stored photo, not the photo itself, so jobs stay small
+    const photoUrl = await storeImage(photo, req.user._id);
+    const job = await enqueue(
+      JOB_TYPES.VERIFY_FIX,
+      { reportId: String(report._id), userId: String(req.user._id), photoUrl },
+      { createdBy: req.user._id }
+    );
+    res.status(202).json({ job: toPublicJob(job) });
   } catch (err) {
-    console.error('Vision API error:', err);
-    return res.status(502).json({ success: false, message: 'Photo verification failed. Please try again.' });
+    console.error('Could not queue the photo check:', err);
+    res.status(500).json({ success: false, message: 'Could not submit the photo. Please try again.' });
   }
+});
+
+const isAdmin = (user: any) => user?.role === 'Organizer' || user?.role === 'Civil Servant';
+
+// The status of a background job, for the person who started it (or an admin)
+app.get('/api/jobs/:id', protect, async (req: any, res) => {
+  const job = isValidObjectId(req.params.id) ? await Job.findById(req.params.id).lean<JobDoc>() : null;
+  if (!job || (String(job.createdBy) !== String(req.user._id) && !isAdmin(req.user))) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+  res.json(toPublicJob(job));
 });
 
 // ==========================================
@@ -845,7 +741,7 @@ app.get('/api/admin/db/status', async (req: any, res) => {
     await db.admin().ping();
     const pingMs = Number(process.hrtime.bigint() - pingStart) / 1e6;
 
-    const [build, stats, usersCount, openCount, resolvedCount, auditLogsCount, notificationsCount, lastExport] = await Promise.all([
+    const [build, stats, usersCount, openCount, resolvedCount, auditLogsCount, notificationsCount, jobsCount, lastExport] = await Promise.all([
       db.admin().command({ buildInfo: 1 }).catch(() => null),
       db.stats(),
       User.countDocuments(),
@@ -853,6 +749,7 @@ app.get('/api/admin/db/status', async (req: any, res) => {
       Report.countDocuments({ status: 'resolved' }),
       AuditLog.countDocuments(),
       Notification.countDocuments(),
+      Job.countDocuments(),
       AuditLog.findOne({ event: 'DB_EXPORT' }).sort({ timestamp: -1 }).lean(),
     ]);
 
@@ -870,6 +767,7 @@ app.get('/api/admin/db/status', async (req: any, res) => {
         { name: 'reports', documents: openCount + resolvedCount, note: `${openCount} open, ${resolvedCount} resolved; 2dsphere index` },
         { name: 'auditlogs', documents: auditLogsCount, note: 'expire after 90 days' },
         { name: 'notifications', documents: notificationsCount, note: 'expire after 60 days' },
+        { name: 'jobs', documents: jobsCount, note: 'background work queue; finished jobs expire after 7 days' },
       ],
       lastExport: lastExport ? { at: lastExport.timestamp, by: lastExport.userEmail, message: lastExport.message } : null,
     });
@@ -877,6 +775,40 @@ app.get('/api/admin/db/status', async (req: any, res) => {
     console.error(err);
     res.status(500).json({ error: 'Failed to load database status' });
   }
+});
+
+// Background job queue: backlog, timings and recent failures
+app.get('/api/admin/jobs', async (req: any, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized credentials session' });
+  }
+  if (!isAdmin(req.user)) {
+    logAuditEvent('SECURITY_VIOLATION', `Forbidden access to job queue by ${req.user.email}`, false, req.user.email, req.ip);
+    return res.status(403).json({ error: 'Forbidden: Requires elevated privileges.' });
+  }
+  try {
+    res.json(await queueStats());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to load the job queue' });
+  }
+});
+
+// Gives a failed job a fresh set of attempts, e.g. after an AI outage is over
+app.post('/api/admin/jobs/:id/retry', async (req: any, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized credentials session' });
+  }
+  if (!isAdmin(req.user)) {
+    logAuditEvent('SECURITY_VIOLATION', `Forbidden job retry by ${req.user.email}`, false, req.user.email, req.ip);
+    return res.status(403).json({ error: 'Forbidden: Requires elevated privileges.' });
+  }
+  const job = isValidObjectId(req.params.id) ? await retryFailedJob(req.params.id) : null;
+  if (!job) {
+    return res.status(404).json({ error: 'No failed job with that id' });
+  }
+  logAuditEvent('JOB_RETRIED', `Job ${job._id} (${job.type}) retried by ${req.user.email}`, true, req.user.email, req.ip);
+  res.json(toPublicJob(job));
 });
 
 // Downloads a collection as NDJSON (one JSON document per line), streamed from a MongoDB

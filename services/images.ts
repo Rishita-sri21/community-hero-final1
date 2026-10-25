@@ -70,6 +70,13 @@ export async function readStoredImage(url: string): Promise<{ contentType: strin
   return { contentType: image.contentType, data: Buffer.concat(chunks) };
 }
 
+/** Deletes an uploaded photo by its /api/images URL. Missing photos are ignored. */
+export async function deleteStoredImage(url: string) {
+  const id = url.startsWith('/api/images/') ? url.slice('/api/images/'.length) : null;
+  if (!id || !mongoose.isValidObjectId(id)) return;
+  await bucket().delete(new mongoose.Types.ObjectId(id)).catch(() => {});
+}
+
 export function imageErrorMessage(reason: ImageError) {
   if (reason === 'too-large') return `Photos must be ${MAX_IMAGE_BYTES / 1024 / 1024} MB or smaller`;
   if (reason === 'unsupported-type') return 'Photos must be JPEG, PNG or WebP';

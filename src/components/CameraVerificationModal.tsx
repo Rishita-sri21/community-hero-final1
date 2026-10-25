@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Report } from '../types';
-import { api } from '../lib/api';
+import { api, JobStatus, ResolveResponse } from '../lib/api';
 import { photoToDataUrl } from '../lib/image';
 import { toast, errorMessage } from '../lib/toast';
 
@@ -11,6 +11,24 @@ interface CameraVerificationModalProps {
   onClose: () => void;
   // Receives the user's new points total as computed by the server
   onSuccess: (totalPoints: number | null) => void;
+}
+
+// What the queued photo check is doing, in words
+function jobHeadline(job: JobStatus | null) {
+  if (!job) return 'Uploading your photo';
+  if (job.status === 'pending' && job.attempts === 0) return 'Waiting for a free checker';
+  if (job.status === 'pending') return 'Retrying shortly';
+  return 'Checking your photo';
+}
+
+function jobDetail(job: JobStatus | null) {
+  if (!job) return 'Sending the photo to the server.';
+  if (job.status === 'pending' && job.attempts > 0) {
+    const seconds = job.runAt ? Math.max(0, Math.round((new Date(job.runAt).getTime() - Date.now()) / 1000)) : 0;
+    return `The last attempt failed${job.error ? ` (${job.error})` : ''}. Trying again${seconds > 0 ? ` in ${seconds} s` : ' now'}.`;
+  }
+  if (job.status === 'pending') return 'Your photo is queued. Checks run in the background on the server, and failed attempts are retried.';
+  return 'Comparing your photo with the original report.';
 }
 
 export default function CameraVerificationModal({
@@ -24,6 +42,8 @@ export default function CameraVerificationModal({
   const [heroPoints, setHeroPoints] = useState<number>(0);
   const [totalPoints, setTotalPoints] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  // The background photo check, as last reported by the server
+  const [job, setJob] = useState<JobStatus<ResolveResponse> | null>(null);
   
   // Camera streams
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -100,12 +120,13 @@ export default function CameraVerificationModal({
   const handleSubmit = async () => {
     if (!capturedImage) return;
     setStep('loading');
+    setJob(null);
     try {
-      const response = await api.resolveReport(report.id, capturedImage);
+      const response = await api.resolveReport(report.id, capturedImage, setJob);
       if (response.success && response.auditResult?.success) {
         setAuditResult(response.auditResult);
         setHeroPoints(response.heroPointsAwarded ?? 0);
-        setTotalPoints(response.userSession?.points ?? null);
+        setTotalPoints(response.points ?? null);
         setStep('certificate');
       } else {
         setErrorMessage(response.message || "Civic AI Vision was unable to verify resolution of the reported issue. Please capture a clearer picture directly showing the completed repair.");
@@ -269,10 +290,13 @@ export default function CameraVerificationModal({
                   </span>
                 </div>
                 <div className="text-center space-y-1.5 max-w-xs">
-                  <h4 className="font-sans text-sm font-bold text-slate-800">Running Multi-Modal Vision Audit</h4>
-                  <p className="text-xs text-slate-600 leading-relaxed">
-                    Analyzing before-and-after spatial metrics and verifying municipal integrity...
-                  </p>
+                  <h4 className="font-sans text-sm font-bold text-slate-800">{jobHeadline(job)}</h4>
+                  <p className="text-xs text-slate-600 leading-relaxed">{jobDetail(job)}</p>
+                  {job && (
+                    <p className="text-[10px] font-mono text-slate-400">
+                      job {job.id.slice(-6)} · {job.status}{job.attempts > 0 ? ` · attempt ${job.attempts} of ${job.maxAttempts}` : ''}
+                    </p>
+                  )}
                 </div>
               </motion.div>
             )}
