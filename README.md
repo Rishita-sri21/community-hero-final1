@@ -18,6 +18,8 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **Squads and your impact:** three standing squads, each looking after a few report categories. Member counts, open reports near you and fixes by members are counted from the database; the "Your impact" card shows your real reports, fixes, verifications, upvotes received, rank, and badges earned from them.
 - **Notifications:** when a neighbor upvotes, verifies or fixes your report, it shows up under the bell (stored in MongoDB, expire after 60 days).
 - **Points and rewards:** earn points for reporting, verifying and resolving; spend them in the store. Every award and spend is decided and applied by the server (see [Points rules](#points-rules)).
+- **Observability:** Prometheus metrics at `/metrics` (request latency per route, in-flight requests, job durations, queue wait and depth, AI call latency and outcomes, live connections), structured JSON logs that carry a request id from the HTTP request into the background jobs it queued, and an `X-Request-Id` header on every response. Admins see p50/p95/p99 latency per route, AI call and job type in the console.
+- **Load tested:** `load/` seeds 5,000 reports and runs autocannon scenarios against a production build. The first run found a crash in mission planning and slow geo queries; the fixes (a compound geo index and read caches) and before/after numbers are in [load/README.md](load/README.md).
 - **Roles:** Volunteers, Civil Servants and Organizers; privileged roles get an admin console with live database measurements (version, ping, storage), the audit log, and NDJSON exports streamed from a database cursor.
 
 ## Architecture
@@ -32,7 +34,8 @@ Express API (app.ts, started by server.ts)
    ├── Job worker ─────────── runs queued jobs (photo checks, triage) with retries; started by server.ts
    │     └── Google Gemini ── triage and photo verification (optional)
    ├── Google Gemini ──────── chat, mission briefings (optional)
-   └── GET /api/events ────── live updates pushed to every open browser (Server-Sent Events)
+   ├── GET /api/events ────── live updates pushed to every open browser (Server-Sent Events)
+   └── GET /metrics ───────── Prometheus metrics (latency, jobs, AI calls); JSON logs on stdout
 ```
 
 How a fix photo is checked:
@@ -73,6 +76,10 @@ On first start the server creates three example reports in New York and four dem
 | `PORT` | no | Server port, default `3000` |
 | `CORS_ORIGINS` | no | Comma-separated sites allowed to call the API from a browser (e.g. your Vercel URL); unset allows any |
 | `SIMULATE_AI_VERIFICATION` | no | Demo only: accept resolution photos without Gemini |
+| `METRICS_TOKEN` | no | Bearer token for `/metrics`. Open in development; in production `/metrics` answers 404 unless this is set |
+| `LOG_LEVEL` | no | `debug`, `info` (default), `warn`, `error` or `silent` |
+| `LOG_FORMAT` | no | `pretty` for readable logs while developing; JSON lines by default |
+| `READ_CACHE` | no | Set to `off` to disable the in-memory read caches (for measuring) |
 | `RUN_JOB_WORKER` | no | Set to `false` to not run the background job worker in this process (e.g. when a separate worker runs) |
 
 ## Scripts
@@ -83,6 +90,7 @@ On first start the server creates three example reports in New York and four dem
 | `npm run lint` | Type-check the whole project with `tsc` |
 | `npm test` | Run the tests. Set `TEST_MONGODB_URI=mongodb://127.0.0.1:27017` to include the points and reports tests, which need MongoDB |
 | `npm run build` | Build the frontend to `dist/` and bundle the server to `dist/server.cjs` |
+| `npm run load:seed`, `npm run load:run` | Seed a load-test database and run the load scenarios (see [load/README.md](load/README.md)) |
 | `npm start` | Start the server (set `NODE_ENV=production` to serve `dist/`) |
 
 CI runs type-check, tests and build on every pull request.
@@ -92,6 +100,7 @@ CI runs type-check, tests and build on every pull request.
 The backend runs on any Node host (it's deployed on Render); the frontend can be served by the same server or by a static host such as Vercel, with `VITE_API_URL` pointing at the backend.
 
 - Set `MONGODB_URI`, `JWT_SECRET` and, for real photo checks, `GEMINI_API_KEY`. Set `CORS_ORIGINS` to the frontend's URL.
+- To scrape metrics, set `METRICS_TOKEN` and point Prometheus (or Grafana Cloud) at `/metrics` with that bearer token. Logs are JSON lines on stdout and stderr, which Render and most hosts collect as they are.
 - Point the host's health check at `/api/health`. It returns 503 while MongoDB is unreachable, so the host can hold traffic or restart the server.
 - The server trusts one proxy hop (`trust proxy`), which is right for Render, Railway, Fly and similar hosts. Without it, every visitor would share a single login rate limit.
 - On `SIGTERM` the server stops accepting connections and closes MongoDB cleanly, so deploys don't cut requests off mid-write.
@@ -137,6 +146,8 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `GET` | `/api/admin/audit-logs`, `/api/admin/db/status`, `/api/admin/export/:collection`, `/api/admin/jobs` | Civil Servant or Organizer |
 | `POST` | `/api/admin/jobs/:id/retry` | Civil Servant or Organizer |
 | `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`, `report.merged`) |
+| `GET` | `/api/admin/performance` | Civil Servant or Organizer; latency percentiles from the metrics |
+| `GET` | `/metrics` | Prometheus text format; `Authorization: Bearer $METRICS_TOKEN` |
 | `GET` | `/api/health` | public (503 while the database is unreachable) |
 
 ## Known limitations
@@ -150,3 +161,5 @@ This project is being upgraded in stages. Current known gaps:
 - Jobs run at least once, not exactly once. Handlers are written to be safe to repeat, but if the server dies between resolving a report and paying the fixer, the retry won't pay again. Closing that gap needs a MongoDB transaction (a replica set) or a points ledger.
 - The app follows a photo check by polling the job every second. Pushing the result over the live-update stream would remove the polling.
 - Live updates go through the server's memory, so they reach everyone only while the backend runs as a single instance. Scaling out would need a shared channel such as MongoDB change streams.
+- Metrics and read caches live in each server's memory, so with several instances each reports and caches its own share. Prometheus can add up per-instance metrics; shared caching would need Redis.
+- There is no distributed tracing (OpenTelemetry); requests and jobs are correlated by request id in the logs.

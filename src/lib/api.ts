@@ -34,6 +34,24 @@ export interface JobStatus<Result = unknown> {
   runAt?: string;
 }
 
+export interface LatencyRow {
+  count: number;
+  errors?: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+}
+
+// Measured by the server since it started (GET /api/admin/performance)
+export interface PerformanceSnapshot {
+  uptimeSeconds: number;
+  eventLoopLagP99Ms: number | null;
+  memoryRssMb: number | null;
+  routes: Array<LatencyRow & { method: string; route: string }>;
+  ai: Array<LatencyRow & { operation: string }>;
+  jobs: Array<LatencyRow & { type: string }>;
+}
+
 export interface JobQueueStats {
   pending: number;
   running: number;
@@ -146,6 +164,10 @@ export const api = {
 
   logout() {
     localStorage.removeItem(TOKEN_KEY);
+  },
+
+  getPerformance() {
+    return request<PerformanceSnapshot>('/api/admin/performance', {}, 'Failed to load performance metrics');
   },
 
   getJobQueue() {

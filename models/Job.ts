@@ -28,6 +28,8 @@ const jobSchema = new mongoose.Schema(
     lockedUntil: Date,
     // Who asked for the work, so they (and admins) can read its status
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Id of the HTTP request that queued the job, carried into the job's log lines
+    requestId: String,
     startedAt: Date,
     finishedAt: Date,
     // Finished jobs are deleted a week after they finish (TTL index below)

@@ -1,4 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { log } from './logger';
+import { timeAiCall } from './metrics';
 import type { Mission } from './missions';
 
 // Gemini is optional. Every feature that uses it either has a plain fallback (mission briefings)
@@ -16,7 +18,7 @@ export function getGenAI(): GoogleGenAI | null {
       try {
         client = new GoogleGenAI({ apiKey: key });
       } catch (err) {
-        console.error('Error initializing GoogleGenAI:', err);
+        log.error('Error initializing GoogleGenAI:', err);
       }
     }
   }
@@ -75,7 +77,7 @@ Walk: ${mission.totalKm.toFixed(1)} km, about ${mission.estimatedMinutes} minute
 ${facts}`;
 
   try {
-    const response = await withTimeout(
+    const response = await timeAiCall('mission-briefing', () => withTimeout(
       ai.models.generateContent({
         model: GEMINI_MODEL,
         contents: prompt,
@@ -89,12 +91,12 @@ ${facts}`;
         },
       }),
       8000
-    );
+    ));
     const { title, briefing } = JSON.parse(response.text || '{}');
     if (typeof title !== 'string' || typeof briefing !== 'string' || !title || !briefing) return fallback;
     return { title: title.slice(0, 80), briefing: briefing.slice(0, 400), briefingSource: 'gemini' };
   } catch (err) {
-    console.warn('Mission briefing fell back to the template:', err instanceof Error ? err.message : err);
+    log.warn('Mission briefing fell back to the template', err);
     return fallback;
   }
 }

@@ -26,6 +26,10 @@ import { enqueue, queueStats, retryFailedJob, toPublicJob } from './services/job
 import { JOB_TYPES, registerJobHandlers } from './services/jobHandlers';
 import { getVision } from './services/vision';
 import { DUPLICATE_RADIUS_M, LIKELY_THRESHOLD, findSimilarReports, mergeDuplicate } from './services/duplicates';
+import { currentLogContext, log, withLogContext } from './services/logger';
+import { gaugeFromCallback, httpDuration, httpInFlight, performanceSnapshot, registry, timeAiCall } from './services/metrics';
+import { randomUUID } from 'crypto';
+import { createCache } from './services/cache';
 import { findImage, imageErrorMessage, parseDataUrlImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
@@ -35,6 +39,44 @@ const app = express();
 
 // The background jobs this server can run (the worker itself is started by server.ts)
 registerJobHandlers();
+
+// Every request gets an id (or keeps the X-Request-Id a proxy or the browser sent), returned in
+// the X-Request-Id response header and attached to every log line written while handling it.
+// When it finishes, its latency goes into the http_request_duration_seconds histogram under
+// its route template, and one structured log line records it.
+app.use((req: any, res, next) => {
+  const incoming = req.get('x-request-id');
+  const requestId = incoming && /^[\w.-]{8,64}$/.test(incoming) ? incoming : randomUUID();
+  res.set('X-Request-Id', requestId);
+  const started = process.hrtime.bigint();
+  httpInFlight.inc();
+  let recorded = false;
+
+  const record = () => {
+    if (recorded) return;
+    recorded = true;
+    httpInFlight.dec();
+    // The matched route template, e.g. /api/reports/:id/upvote. Unmatched requests (404s,
+    // static files) share one label, so random URLs can't create unbounded label values.
+    const route = req.route ? `${req.baseUrl}${req.route.path}` : 'unmatched';
+    // Live-update streams stay open for minutes; their duration isn't latency
+    if (route === '/api/events') return;
+    const seconds = Number(process.hrtime.bigint() - started) / 1e9;
+    httpDuration.observe({ method: req.method, route, status: String(res.statusCode) }, seconds);
+    const quiet = route === '/api/health' || route === '/metrics' || route === 'unmatched';
+    (quiet ? log.debug : log.info)('request', {
+      method: req.method,
+      route,
+      path: req.originalUrl.split('?')[0],
+      status: res.statusCode,
+      durationMs: Math.round(seconds * 10000) / 10,
+    });
+  };
+  res.on('finish', record);
+  res.on('close', record);
+
+  withLogContext({ requestId }, () => next());
+});
 
 // Render, Vercel and most hosts put a proxy in front of the app. Trusting one proxy hop makes
 // req.ip the visitor's address instead of the proxy's, so the login rate limit is per visitor
@@ -117,6 +159,8 @@ app.use(async (req: any, res, next) => {
 
       if (user) {
         req.user = user;
+        const context = currentLogContext();
+        if (context) context.userId = String(user._id);
       }
     } catch (err) {
       // Invalid/expired token on an optional route — just proceed unauthenticated.
@@ -175,7 +219,7 @@ app.post('/api/auth/register', rateLimitAuth, async (req, res) => {
       user: publicUser(user),
     });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Registration failed' });
   }
 });
@@ -207,7 +251,7 @@ app.post('/api/auth/login', rateLimitAuth, async (req, res) => {
       user: publicUser(user),
     });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Login failed' });
   }
 });
@@ -230,7 +274,7 @@ app.get('/api/leaderboard', async (req, res) => {
     }));
     res.json(leaderboard);
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load leaderboard' });
   }
 });
@@ -250,7 +294,7 @@ app.post('/api/actions/green', protect, async (req: any, res) => {
     logAuditEvent('POINTS_TRANSACTION', `Green action ${req.body.actionId} logged by ${req.user.email} (+${result.awarded})`, true, req.user.email, req.ip);
     res.json({ points: result.points, awarded: result.awarded });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to log action' });
   }
 });
@@ -267,7 +311,7 @@ app.post('/api/rewards/redeem', protect, async (req: any, res) => {
     logAuditEvent('POINTS_TRANSACTION', `Reward ${req.body.rewardId} redeemed by ${req.user.email}`, true, req.user.email, req.ip);
     res.json({ points: result.points, code: result.code });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to redeem reward' });
   }
 });
@@ -286,7 +330,7 @@ app.post('/api/users/update-district', protect, async (req: any, res) => {
 
     res.json({ success: true, user: publicUser(req.user) });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to update district' });
   }
 });
@@ -300,7 +344,7 @@ app.post('/api/users/join-squad', protect, async (req: any, res) => {
     }
     res.json({ joinedSquads: result.joinedSquads, points: result.points, awarded: result.awarded });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to join squad' });
   }
 });
@@ -310,7 +354,7 @@ app.post('/api/users/leave-squad', protect, async (req: any, res) => {
     const joinedSquads = await leaveSquad(req.user._id, String(req.body.squadId || ''));
     res.json({ joinedSquads });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to leave squad' });
   }
 });
@@ -320,7 +364,7 @@ app.get('/api/squads', protect, async (req: any, res) => {
   try {
     res.json(await listSquads(req.user, centerForDistrict(req.user.district)));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load squads' });
   }
 });
@@ -329,7 +373,7 @@ app.get('/api/users/me/stats', protect, async (req: any, res) => {
   try {
     res.json(await userStats(req.user));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load your stats' });
   }
 });
@@ -339,7 +383,7 @@ app.get('/api/notifications', protect, async (req: any, res) => {
   try {
     res.json(await listNotifications(req.user._id));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load notifications' });
   }
 });
@@ -349,7 +393,7 @@ app.post('/api/notifications/read', protect, async (req: any, res) => {
     await markAllRead(req.user._id);
     res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to update notifications' });
   }
 });
@@ -360,6 +404,19 @@ app.get('/api/health', (req, res) => {
   const database = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
   res.status(database === 'connected' ? 200 : 503).json({ status: database === 'connected' ? 'ok' : 'degraded', database });
 });
+
+// Prometheus metrics for a scraper. With METRICS_TOKEN set, the scraper must send it as a Bearer
+// token; without it the endpoint is open in development and turned off in production.
+app.get('/metrics', async (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (token ? req.get('authorization') !== `Bearer ${token}` : process.env.NODE_ENV === 'production') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.set('Content-Type', registry.contentType);
+  res.send(await registry.metrics());
+});
+
+gaugeFromCallback('sse_connections', 'Browsers connected to the live-update stream', [], async () => [{ labels: {}, value: listenerCount() }]);
 
 // Live updates: new reports, vote counts and resolutions, as Server-Sent Events
 app.get('/api/events', (req, res) => {
@@ -390,7 +447,7 @@ app.get('/api/reports', async (req: any, res) => {
     const reports = await listOpenReports(nearFromQuery(req.query));
     res.json(reports.map((r: any) => toPublicReport(r, req.user, r.distanceMeters)));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load reports' });
   }
 });
@@ -408,7 +465,7 @@ app.get('/api/images/:id', async (req, res) => {
     });
     image.stream().on('error', () => res.end()).pipe(res);
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load image' });
   }
 });
@@ -462,7 +519,7 @@ app.post('/api/reports', protect, async (req: any, res) => {
     lat: reportData.lat,
     lng: reportData.lng,
   }).catch((err) => {
-    console.error('Duplicate check failed:', err);
+    log.error('Duplicate check failed:', err);
     return [];
   });
   const likely = similar[0]?.score >= LIKELY_THRESHOLD ? similar[0] : undefined;
@@ -485,7 +542,7 @@ app.post('/api/reports', protect, async (req: any, res) => {
   // Category and urgency from the photo and text, in the background, so posting stays fast.
   // If queueing fails the report still stands, with the reporter's own choices.
   enqueue(JOB_TYPES.TRIAGE_REPORT, { reportId: String(report._id) }, { createdBy: userId }).catch((err) => {
-    console.error(`Could not queue triage for report ${report._id}:`, err);
+    log.error(`Could not queue triage for report ${report._id}:`, err);
   });
 
   logAuditEvent('REPORT_CREATED', `Report ${report._id} created by ${req.user.email}`, true, req.user.email, req.ip);
@@ -513,7 +570,7 @@ app.get('/api/reports/similar', protect, async (req: any, res) => {
     const category = typeof req.query.category === 'string' ? req.query.category : undefined;
     res.json({ matches: await findSimilarReports({ ...at, title, description, category }), radiusMeters: DUPLICATE_RADIUS_M });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to look for similar reports' });
   }
 });
@@ -630,10 +687,10 @@ Only state facts from this message. If you don't know something, say so. Keep an
     // Gemini expects the conversation to start with the user; drop the widget's greeting
     while (history.length > 0 && history[0].role === 'model') history.shift();
     const chat = ai.chats.create({ model: GEMINI_MODEL, config: { systemInstruction }, history });
-    const response = await withTimeout(chat.sendMessage({ message: messages[messages.length - 1].text }), 20000);
+    const response = await timeAiCall('assistant-chat', () => withTimeout(chat.sendMessage({ message: messages[messages.length - 1].text }), 20000));
     return res.json({ text: response.text });
   } catch (err) {
-    console.error('Gemini chat error:', err);
+    log.error('Gemini chat error:', err);
     return res.status(502).json({ error: 'The assistant could not answer right now. Please try again.' });
   }
 });
@@ -660,7 +717,8 @@ app.get('/api/missions/plan', protect, async (req: any, res) => {
       {
         $project: {
           title: 1, category: 1, urgency: 1, upvotes: 1, createdAt: 1, location: 1,
-          verifications: { $size: '$verifiedBy' },
+          // $ifNull: documents written outside Mongoose (imports, old data) may lack the array
+          verifications: { $size: { $ifNull: ['$verifiedBy', []] } },
         },
       },
     ]);
@@ -686,7 +744,7 @@ app.get('/api/missions/plan', protect, async (req: any, res) => {
     const briefing = await writeMissionBriefing(mission, req.user.district);
     res.json({ mission: { ...mission, ...briefing, start }, searchRadiusKm: MISSION_SEARCH_RADIUS_KM });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to plan a mission' });
   }
 });
@@ -696,10 +754,12 @@ app.get('/api/stories', async (req, res) => {
   try {
     res.json(await listStories());
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load stories' });
   }
 });
+
+const analyticsCache = createCache<Awaited<ReturnType<typeof neighborhoodAnalytics>>>({ ttlMs: 30_000, maxEntries: 200 });
 
 // Neighborhood statistics around ?lat=&lng=, computed from stored reports
 app.get('/api/analytics', async (req: any, res) => {
@@ -708,9 +768,12 @@ app.get('/api/analytics', async (req: any, res) => {
     return res.status(400).json({ error: 'lat and lng are required' });
   }
   try {
-    res.json(await neighborhoodAnalytics(center));
+    // Counts over a 25 km area change slowly and are costly to compute, so each area's numbers
+    // are reused for 30 seconds (~110 m rounding, so nearby viewers share them)
+    const key = `${center.lat.toFixed(3)},${center.lng.toFixed(3)}`;
+    res.json(await analyticsCache.get(key, () => neighborhoodAnalytics(center)));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load analytics' });
   }
 });
@@ -748,7 +811,7 @@ app.post('/api/reports/resolve', protect, async (req: any, res) => {
     );
     res.status(202).json({ job: toPublicJob(job) });
   } catch (err) {
-    console.error('Could not queue the photo check:', err);
+    log.error('Could not queue the photo check:', err);
     res.status(500).json({ success: false, message: 'Could not submit the photo. Please try again.' });
   }
 });
@@ -781,7 +844,7 @@ app.get('/api/admin/audit-logs', async (req: any, res) => {
     const logs = await AuditLog.find().sort({ timestamp: -1 }).limit(250).lean();
     res.json(logs.map(({ _id, __v, ...log }: any) => ({ id: String(_id), ...log })));
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load audit logs' });
   }
 });
@@ -835,9 +898,21 @@ app.get('/api/admin/db/status', async (req: any, res) => {
       lastExport: lastExport ? { at: lastExport.timestamp, by: lastExport.userEmail, message: lastExport.message } : null,
     });
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load database status' });
   }
+});
+
+// Latency percentiles per route and per AI operation, measured by this server since it started
+app.get('/api/admin/performance', async (req: any, res) => {
+  if (!req.user) {
+    return res.status(401).json({ error: 'Unauthorized credentials session' });
+  }
+  if (!isAdmin(req.user)) {
+    logAuditEvent('SECURITY_VIOLATION', `Forbidden access to performance metrics by ${req.user.email}`, false, req.user.email, req.ip);
+    return res.status(403).json({ error: 'Forbidden: Requires elevated privileges.' });
+  }
+  res.json(await performanceSnapshot());
 });
 
 // Background job queue: backlog, timings and recent failures
@@ -852,7 +927,7 @@ app.get('/api/admin/jobs', async (req: any, res) => {
   try {
     res.json(await queueStats());
   } catch (err) {
-    console.error(err);
+    log.error('Request failed', err);
     res.status(500).json({ error: 'Failed to load the job queue' });
   }
 });
@@ -914,7 +989,7 @@ app.get('/api/admin/export/:collection', async (req: any, res) => {
     res.end();
     logAuditEvent('DB_EXPORT', `Exported ${count} ${req.params.collection} documents`, true, req.user.email, req.ip);
   } catch (err) {
-    console.error('Export failed:', err);
+    log.error('Export failed:', err);
     res.destroy(err as Error); // a cut-off download is better than a file that looks complete
   }
 });
