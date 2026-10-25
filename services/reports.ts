@@ -53,6 +53,16 @@ export function toPublicReport(report: any, user?: any, distanceMeters?: number)
     isMine: isOwner(report, user),
     hasUpvoted: userId ? report.upvotedBy.some((id: unknown) => String(id) === userId) : false,
     hasVerified: userId ? report.verifiedBy.some((id: unknown) => String(id) === userId) : false,
+    triage: report.triage?.status
+      ? {
+          status: report.triage.status,
+          category: report.triage.category,
+          urgency: report.triage.urgency,
+          reason: report.triage.reason,
+          source: report.triage.source,
+          autoFields: report.triage.autoFields ?? [],
+        }
+      : undefined,
   };
 }
 

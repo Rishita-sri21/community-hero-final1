@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../lib/api';
+import { api, JobQueueStats } from '../lib/api';
 import { toast, errorMessage } from '../lib/toast';
-import { Database, ShieldAlert, CheckCircle, RefreshCw, Server, Search, Lock, AlertOctagon, Download, Info, Activity } from 'lucide-react';
+import { Database, ShieldAlert, CheckCircle, RefreshCw, Server, Search, Lock, AlertOctagon, Download, Info, Activity, ListChecks } from 'lucide-react';
 
-const EVENT_FILTERS = ['ALL', 'SECURITY_VIOLATION', 'AUTH_LOGIN', 'AUTH_REGISTER', 'REPORT_CREATED', 'REPORT_VERIFIED', 'REPORT_RESOLVED', 'DB_EXPORT'];
+const EVENT_FILTERS = ['ALL', 'SECURITY_VIOLATION', 'AUTH_LOGIN', 'AUTH_REGISTER', 'REPORT_CREATED', 'REPORT_VERIFIED', 'REPORT_RESOLVED', 'DB_EXPORT', 'JOB_RETRIED'];
 const EXPORTABLE = [
   { id: 'reports', label: 'Reports' },
   { id: 'users', label: 'Users (no passwords)' },
@@ -15,6 +15,10 @@ function formatBytes(bytes?: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function formatMs(ms: number) {
+  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 }
 
 function formatUptime(seconds?: number) {
@@ -32,13 +36,16 @@ export default function AdminConsole() {
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [exporting, setExporting] = useState<string | null>(null);
   const [filterType, setFilterType] = useState<string>('ALL');
+  const [queue, setQueue] = useState<JobQueueStats | null>(null);
+  const [retrying, setRetrying] = useState<string | null>(null);
 
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [statusData, logsData] = await Promise.all([api.getDbStatus(), api.getAuditLogs()]);
+      const [statusData, logsData, queueData] = await Promise.all([api.getDbStatus(), api.getAuditLogs(), api.getJobQueue()]);
       setStatus(statusData);
       setLogs(logsData);
+      setQueue(queueData);
     } catch (err) {
       toast.error(errorMessage(err, 'Could not load the admin console.'));
     } finally {
@@ -72,8 +79,29 @@ export default function AdminConsole() {
     }
   };
 
+  const handleRetry = async (id: string) => {
+    try {
+      setRetrying(id);
+      await api.retryJob(id);
+      toast.success('Job queued again');
+      setQueue(await api.getJobQueue());
+    } catch (err) {
+      toast.error(errorMessage(err, 'Could not retry the job.'));
+    } finally {
+      setRetrying(null);
+    }
+  };
+
   useEffect(() => {
     fetchData();
+  }, []);
+
+  // The queue changes by the second; refresh it on its own while the console is open
+  useEffect(() => {
+    const timer = setInterval(() => {
+      api.getJobQueue().then(setQueue).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   const filteredLogs = logs.filter((log) => {
@@ -195,6 +223,80 @@ export default function AdminConsole() {
             : 'No exports yet.'}
         </p>
       </div>
+
+      {queue && (
+        <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-4">
+          <div className="space-y-1">
+            <h3 className="font-black text-slate-800 text-sm flex items-center gap-2">
+              <ListChecks className="w-4 h-4 text-indigo-500" /> Background jobs
+            </h3>
+            <p className="text-slate-400 text-[11px]">
+              AI photo checks and report triage run from a queue in MongoDB, with retries and backoff. Refreshes every 5 seconds.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+            {([
+              ['Waiting', queue.pending],
+              ['Running', queue.running],
+              ['Done (7 days)', queue.done],
+              ['Failed', queue.failed],
+              ['Oldest waiting', queue.oldestDueSeconds === null ? '—' : `${queue.oldestDueSeconds} s`],
+            ] as const).map(([label, value]) => (
+              <div key={label} className="bg-slate-50 rounded-xl p-3 border border-slate-100">
+                <div className="text-[10px] text-slate-400 font-bold uppercase">{label}</div>
+                <div className={`font-mono font-bold ${label === 'Failed' && queue.failed > 0 ? 'text-rose-600' : 'text-slate-700'}`}>{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 text-slate-400 font-bold uppercase text-[10px]">
+                  <th className="pb-3">Job type (last 24 h)</th>
+                  <th className="pb-3 text-right">Completed</th>
+                  <th className="pb-3 text-right">Needed a retry</th>
+                  <th className="pb-3 text-right">Avg wait</th>
+                  <th className="pb-3 text-right">Avg run</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50 font-semibold text-slate-600">
+                {queue.last24h.length === 0 && (
+                  <tr><td colSpan={5} className="py-3 text-slate-400">No jobs finished in the last 24 hours.</td></tr>
+                )}
+                {queue.last24h.map((t) => (
+                  <tr key={t.type}>
+                    <td className="py-3 font-mono">{t.type}</td>
+                    <td className="py-3 text-right font-mono">{t.completed}</td>
+                    <td className="py-3 text-right font-mono">{t.retried}</td>
+                    <td className="py-3 text-right font-mono">{formatMs(t.avgWaitMs)}</td>
+                    <td className="py-3 text-right font-mono">{formatMs(t.avgRunMs)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {queue.recentFailures.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] text-slate-400 font-bold uppercase">Recent failures</div>
+              {queue.recentFailures.map((f) => (
+                <div key={f.id} className="flex items-center justify-between gap-3 bg-rose-50/60 border border-rose-100 rounded-xl px-3 py-2 text-[11px]">
+                  <div className="min-w-0">
+                    <span className="font-mono font-bold text-slate-700">{f.type}</span>
+                    <span className="text-slate-500"> · {f.attempts} attempt{f.attempts === 1 ? '' : 's'} · {f.error}</span>
+                  </div>
+                  <button
+                    onClick={() => handleRetry(f.id)}
+                    disabled={retrying !== null}
+                    className="shrink-0 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-bold px-2.5 py-1 rounded-lg disabled:opacity-50 cursor-pointer"
+                  >
+                    {retrying === f.id ? 'Retrying…' : 'Retry'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-6">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">

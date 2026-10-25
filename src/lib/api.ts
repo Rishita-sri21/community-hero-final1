@@ -17,10 +17,37 @@ export interface ResolveResponse {
     simulated?: boolean;
   };
   heroPointsAwarded?: number;
-  userSession?: {
-    points: number | null;
-  };
+  // The user's new points total
+  points?: number | null;
 }
+
+// A background job on the server (GET /api/jobs/:id)
+export interface JobStatus<Result = unknown> {
+  id: string;
+  type: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  attempts: number;
+  maxAttempts: number;
+  result?: Result;
+  error?: string;
+  // For a pending job: when it will next be tried (later than now while it waits to retry)
+  runAt?: string;
+}
+
+export interface JobQueueStats {
+  pending: number;
+  running: number;
+  done: number;
+  failed: number;
+  // How long the oldest due job has waited to start; null when none is waiting
+  oldestDueSeconds: number | null;
+  last24h: Array<{ type: string; completed: number; retried: number; avgWaitMs: number; avgRunMs: number }>;
+  recentFailures: Array<{ id: string; type: string; attempts: number; error?: string; finishedAt?: string }>;
+}
+
+const JOB_POLL_MS = 1000;
+const JOB_WAIT_LIMIT_MS = 3 * 60_000;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface AuthResponse {
   token: string;
@@ -121,6 +148,14 @@ export const api = {
     localStorage.removeItem(TOKEN_KEY);
   },
 
+  getJobQueue() {
+    return request<JobQueueStats>('/api/admin/jobs', {}, 'Failed to load the job queue');
+  },
+
+  retryJob(id: string) {
+    return post<JobStatus>(`/api/admin/jobs/${id}/retry`, {}, 'Failed to retry the job');
+  },
+
   getLeaderboard() {
     return request<LeaderboardEntry[]>('/api/leaderboard', {}, 'Failed to fetch leaderboard');
   },
@@ -146,9 +181,18 @@ export const api = {
     return post<ReportActionResponse>(`/api/reports/${id}/verify`, {}, 'Failed to verify report');
   },
 
-  // Unlike the others, this returns the server's answer even for error statuses,
-  // because the body explains why verification failed and the modal shows it.
-  async resolveReport(reportId: string, imageBase64: string): Promise<ResolveResponse> {
+  getJob<Result = unknown>(id: string) {
+    return request<JobStatus<Result>>(`/api/jobs/${id}`, {}, 'Failed to load job');
+  },
+
+  // Submits the fix photo, then follows the background check until it finishes, reporting
+  // each change of state to onProgress. Like before, failures come back as { success: false,
+  // message } rather than throwing, because the modal shows the server's explanation.
+  async resolveReport(
+    reportId: string,
+    imageBase64: string,
+    onProgress?: (job: JobStatus<ResolveResponse>) => void
+  ): Promise<ResolveResponse> {
     const res = await apiFetch('/api/reports/resolve', {
       method: 'POST',
       headers: makeHeaders(),
@@ -158,7 +202,30 @@ export const api = {
     if (!res.ok) {
       return { success: false, message: body.message || body.error || 'Failed to resolve report' };
     }
-    return body;
+    // Backends from before the job queue answered at once
+    if (res.status !== 202) {
+      return { ...body, points: body.points ?? body.userSession?.points ?? null };
+    }
+
+    let job: JobStatus<ResolveResponse> = body.job;
+    const deadline = Date.now() + JOB_WAIT_LIMIT_MS;
+    onProgress?.(job);
+    while (job.status === 'pending' || job.status === 'running') {
+      if (Date.now() > deadline) {
+        return { success: false, message: 'The photo check is taking longer than usual. Check the report again in a few minutes.' };
+      }
+      await sleep(JOB_POLL_MS);
+      try {
+        job = await api.getJob<ResolveResponse>(job.id);
+        onProgress?.(job);
+      } catch {
+        // A dropped poll isn't fatal: the job keeps running on the server; try again next tick
+      }
+    }
+    if (job.status === 'failed') {
+      return { success: false, message: `The photo could not be checked after ${job.attempts} tries. Please try again later.` };
+    }
+    return job.result ?? { success: false, message: 'The photo check finished without a result.' };
   },
 
   logGreenAction(actionId: string) {

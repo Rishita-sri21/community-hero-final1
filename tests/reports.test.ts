@@ -9,6 +9,9 @@ import { generateToken } from '../utils/jwt';
 import { seedDemoReports } from '../services/reports';
 import type { AddressInfo } from 'net';
 import { openStream } from './helpers/stream';
+import Job from '../models/Job';
+import { drainJobs } from '../services/jobs';
+import { resolveAndWait } from './helpers/jobs';
 
 // Report storage, photos and location search, against a real MongoDB (see points.test.ts).
 const MONGO_URI = process.env.TEST_MONGODB_URI;
@@ -46,7 +49,7 @@ describe.skipIf(!MONGO_URI)('reports (MongoDB)', () => {
   });
 
   beforeEach(async () => {
-    await Promise.all([User.deleteMany({}), Report.deleteMany({}), AuditLog.deleteMany({})]);
+    await Promise.all([User.deleteMany({}), Report.deleteMany({}), AuditLog.deleteMany({}), Job.deleteMany({})]);
     delete process.env.SIMULATE_AI_VERIFICATION;
   });
 
@@ -131,8 +134,8 @@ describe.skipIf(!MONGO_URI)('reports (MongoDB)', () => {
     const fixer = await createUser('Io');
     const id = (await postReport(reporter.token, { lat: 40.7, lng: -74 })).body.report.id;
 
-    const res = await request(app).post('/api/reports/resolve').set(auth(fixer.token)).send({ reportId: id, image: TINY_JPEG_URL });
-    expect(res.status).toBe(200);
+    const res = await resolveAndWait(app, fixer.token, id, TINY_JPEG_URL);
+    expect(res.body.success).toBe(true);
 
     const stored = await Report.findById(id);
     expect(stored!.status).toBe('resolved');
@@ -196,6 +199,7 @@ describe.skipIf(!MONGO_URI)('reports (MongoDB)', () => {
       expect((await stream.next('report.updated')).report).toMatchObject({ id, upvotes: 1 });
 
       await request(app).post('/api/reports/resolve').set(auth(neighbor.token)).send({ reportId: id, image: TINY_JPEG_URL });
+      await drainJobs();
       expect(await stream.next('report.resolved')).toEqual({ type: 'report.resolved', id });
     } finally {
       stream.close();

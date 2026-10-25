@@ -31,6 +31,18 @@ export interface Report {
   isMine?: boolean;
   hasUpvoted?: boolean;
   hasVerified?: boolean;
+  // Category and urgency suggested in the background after the report was posted
+  triage?: ReportTriage;
+}
+
+export interface ReportTriage {
+  status: 'pending' | 'done' | 'failed';
+  category?: string;
+  urgency?: 'High' | 'Medium' | 'Low';
+  reason?: string;
+  source?: 'gemini' | 'keywords';
+  // The fields the reporter left to the AI, which the suggestion was applied to
+  autoFields: Array<'category' | 'urgency'>;
 }
 
 // A squad with numbers counted from the database (GET /api/squads)

@@ -7,6 +7,8 @@ import Report from '../models/Report';
 import AuditLog from '../models/AuditLog';
 import Notification from '../models/Notification';
 import { generateToken } from '../utils/jwt';
+import Job from '../models/Job';
+import { resolveAndWait } from './helpers/jobs';
 
 // Squads, personal stats, notifications and admin exports, against a real MongoDB (see points.test.ts).
 const MONGO_URI = process.env.TEST_MONGODB_URI;
@@ -41,7 +43,7 @@ describe.skipIf(!MONGO_URI)('community (MongoDB)', () => {
   });
 
   beforeEach(async () => {
-    await Promise.all([User.deleteMany({}), Report.deleteMany({}), AuditLog.deleteMany({}), Notification.deleteMany({})]);
+    await Promise.all([User.deleteMany({}), Report.deleteMany({}), AuditLog.deleteMany({}), Notification.deleteMany({}), Job.deleteMany({})]);
     process.env.SIMULATE_AI_VERIFICATION = 'true';
   });
 
@@ -54,7 +56,7 @@ describe.skipIf(!MONGO_URI)('community (MongoDB)', () => {
     await postReport(ana.token, { category: 'Streetlight' });
     await postReport(ana.token, { category: 'Graffiti' });
     await postReport(ana.token, { category: 'Pothole', lat: 51.5, lng: -0.12 }); // London: not nearby
-    await request(app).post('/api/reports/resolve').set(auth(bo.token)).send({ reportId: pothole, image: PHOTO });
+    await resolveAndWait(app, bo.token, pothole, PHOTO);
 
     const res = await request(app).get('/api/squads').set(auth(bo.token));
 
@@ -74,9 +76,9 @@ describe.skipIf(!MONGO_URI)('community (MongoDB)', () => {
     await request(app).post(`/api/reports/${first}/upvote`).set(auth(bo.token));
     await request(app).post(`/api/reports/${first}/verify`).set(auth(bo.token));
     const boReport = await postReport(bo.token);
-    await request(app).post('/api/reports/resolve').set(auth(ana.token)).send({ reportId: boReport, image: PHOTO });
+    await resolveAndWait(app, ana.token, boReport, PHOTO);
     // Closing your own report doesn't count as a fix
-    await request(app).post('/api/reports/resolve').set(auth(ana.token)).send({ reportId: first, image: PHOTO });
+    await resolveAndWait(app, ana.token, first, PHOTO);
 
     const res = await request(app).get('/api/users/me/stats').set(auth(ana.token));
 
@@ -98,7 +100,7 @@ describe.skipIf(!MONGO_URI)('community (MongoDB)', () => {
 
     await request(app).post(`/api/reports/${id}/upvote`).set(auth(bo.token));
     await request(app).post(`/api/reports/${id}/verify`).set(auth(bo.token));
-    await request(app).post('/api/reports/resolve').set(auth(bo.token)).send({ reportId: id, image: PHOTO });
+    await resolveAndWait(app, bo.token, id, PHOTO);
     await new Promise((r) => setTimeout(r, 100)); // notifications are written without blocking the response
 
     const res = await request(app).get('/api/notifications').set(auth(ana.token));
@@ -118,7 +120,7 @@ describe.skipIf(!MONGO_URI)('community (MongoDB)', () => {
   it('does not notify reporters about closing their own report', async () => {
     const ana = await createUser('Ana');
     const id = await postReport(ana.token);
-    await request(app).post('/api/reports/resolve').set(auth(ana.token)).send({ reportId: id, image: PHOTO });
+    await resolveAndWait(app, ana.token, id, PHOTO);
     await new Promise((r) => setTimeout(r, 100));
     expect(await Notification.countDocuments()).toBe(0);
   });

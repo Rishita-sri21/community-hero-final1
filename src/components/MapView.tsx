@@ -13,6 +13,7 @@ import { useReportActions } from '../hooks/useReportActions';
 import { POINTS } from '../shared/catalog';
 import { centerForDistrict, distanceBetweenKm } from '../shared/neighborhoods';
 import { photoToDataUrl } from '../lib/image';
+import TriageNote from './TriageNote';
 
 interface MapViewProps {
   reports: Report[];
@@ -92,10 +93,10 @@ export default function MapView({
   const [showNewReportModal, setShowNewReportModal] = useState(false);
   const [newReportTitle, setNewReportTitle] = useState('');
   const [newReportDesc, setNewReportDescription] = useState('');
-  const [newReportUrgency, setNewReportUrgency] = useState<'High' | 'Medium' | 'Low'>('Medium');
+  const [newReportUrgency, setNewReportUrgency] = useState<'High' | 'Medium' | 'Low' | 'auto'>('auto');
   const [newReportPhoto, setNewReportPhoto] = useState<string | null>(null);
   const [submittingReport, setSubmittingReport] = useState(false);
-  const [newReportCategory, setNewReportCategory] = useState('Pothole');
+  const [newReportCategory, setNewReportCategory] = useState('auto');
 
 
   // The map opens on the user's neighborhood
@@ -288,7 +289,8 @@ export default function MapView({
       const partialReport: Partial<Report> = {
         title: newReportTitle,
         description: newReportDesc,
-        urgency: newReportUrgency,
+        // "auto" leaves the field to the server's background triage
+        urgency: newReportUrgency as Report['urgency'],
         district: userDistrict,
         category: newReportCategory,
         lat: selectedCoordinates?.lat,
@@ -630,6 +632,7 @@ export default function MapView({
                       {rep.description}
                     </p>
                   </div>
+                  <TriageNote report={rep} />
 
                   {/* Optional coordinates indicator */}
                   {(rep.lat || rep.lng) && (
@@ -762,6 +765,7 @@ export default function MapView({
                       onChange={(e) => setNewReportCategory(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-sans text-xs focus:outline-none cursor-pointer focus:ring-2 focus:ring-blue-600"
                     >
+                      <option value="auto">✨ Let AI decide</option>
                       <option>Pothole</option>
                       <option>Graffiti</option>
                       <option>Streetlight</option>
@@ -777,6 +781,7 @@ export default function MapView({
                       onChange={(e) => setNewReportUrgency(e.target.value as any)}
                       className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-sans text-xs focus:outline-none cursor-pointer focus:ring-2 focus:ring-blue-600"
                     >
+                      <option value="auto">✨ Let AI decide</option>
                       <option value="High">🔴 High Urgency</option>
                       <option value="Medium">🟡 Medium Urgency</option>
                       <option value="Low">🟢 Low Urgency</option>

@@ -32,6 +32,21 @@ const reportSchema = new mongoose.Schema(
       at: Date,
       image: String,
       details: String,
+      // How the fix photo was checked, and by which background job (makes a retried job safe to repeat)
+      confidenceScore: Number,
+      checkedBy: { type: String, enum: ["gemini", "simulated"] },
+      jobId: { type: mongoose.Schema.Types.ObjectId, ref: "Job" },
+    },
+    // Category and urgency suggested by a background triage job (services/jobHandlers.ts).
+    // Only the fields listed in autoFields, the ones the reporter left to the AI, are applied.
+    triage: {
+      status: { type: String, enum: ["pending", "done", "failed"] },
+      category: String,
+      urgency: String,
+      reason: String,
+      source: { type: String, enum: ["gemini", "keywords"] },
+      autoFields: [String],
+      at: Date,
     },
   },
   { timestamps: true }
