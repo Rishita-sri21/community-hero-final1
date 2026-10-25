@@ -26,7 +26,15 @@ const reportSchema = new mongoose.Schema(
     verified: { type: Boolean, default: false },
     upvotedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     verifiedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-    status: { type: String, enum: ["open", "resolved"], default: "open" },
+    status: { type: String, enum: ["open", "resolved", "duplicate"], default: "open" },
+    // Set when this report was closed as a duplicate of another (services/duplicates.ts)
+    duplicateOf: { type: mongoose.Schema.Types.ObjectId, ref: "Report" },
+    // The best match found when the report was posted, if it looked like a duplicate
+    possibleDuplicate: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: "Report" },
+      title: String,
+      score: Number,
+    },
     resolution: {
       by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       at: Date,

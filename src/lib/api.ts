@@ -1,4 +1,4 @@
-import { AppNotification, Mission, NeighborhoodAnalytics, Report, Squad, Story, UserStats } from '../types';
+import { AppNotification, Mission, SimilarReport, NeighborhoodAnalytics, Report, Squad, Story, UserStats } from '../types';
 import { API_URL } from '../config';
 
 export interface ChatMessage {
@@ -179,6 +179,23 @@ export const api = {
 
   verifyReport(id: string) {
     return post<ReportActionResponse>(`/api/reports/${id}/verify`, {}, 'Failed to verify report');
+  },
+
+  async findSimilarReports(params: { lat: number; lng: number; title: string; description: string; category: string }) {
+    const query = new URLSearchParams({
+      lat: String(params.lat),
+      lng: String(params.lng),
+      title: params.title,
+      description: params.description,
+      category: params.category,
+    });
+    const data = await request<{ matches: SimilarReport[] }>(`/api/reports/similar?${query}`, {}, 'Failed to look for similar reports');
+    return data.matches;
+  },
+
+  async mergeDuplicate(id: string, intoId: string) {
+    const data = await post<{ report: Report }>(`/api/reports/${id}/duplicate`, { of: intoId }, 'Failed to merge the reports');
+    return data.report;
   },
 
   getJob<Result = unknown>(id: string) {

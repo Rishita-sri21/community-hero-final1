@@ -33,6 +33,19 @@ export interface Report {
   hasVerified?: boolean;
   // Category and urgency suggested in the background after the report was posted
   triage?: ReportTriage;
+  // When posted, this report looked like a duplicate of another open one (score 0 to 1)
+  possibleDuplicate?: { id: string; title: string; score: number };
+}
+
+// An open report that looks like the same problem as one being written (GET /api/reports/similar)
+export interface SimilarReport {
+  id: string;
+  title: string;
+  category: string;
+  distanceMeters: number;
+  score: number;
+  reasons: string[];
+  upvotes: number;
 }
 
 export interface ReportTriage {

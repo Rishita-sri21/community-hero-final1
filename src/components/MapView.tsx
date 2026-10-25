@@ -14,6 +14,8 @@ import { POINTS } from '../shared/catalog';
 import { centerForDistrict, distanceBetweenKm } from '../shared/neighborhoods';
 import { photoToDataUrl } from '../lib/image';
 import TriageNote from './TriageNote';
+import DuplicateNote from './DuplicateNote';
+import SimilarReports from './SimilarReports';
 
 interface MapViewProps {
   reports: Report[];
@@ -304,8 +306,16 @@ export default function MapView({
         const km = distanceBetweenKm({ lat: centerLat, lng: centerLng }, { lat: created.lat, lng: created.lng });
         created.distanceKm = Math.round(km * 10) / 10;
       }
-      // The live update for this report may have arrived first; keep a single copy
-      setReports(prev => [created, ...prev.filter(r => r.id !== created.id)]);
+      // Live updates for this report (its creation, then its triage) may have arrived first.
+      // Keep a single copy: the newest shared fields from the live copy, and the viewer-specific
+      // fields (isMine, ...) from our own response, which the live stream leaves out.
+      setReports(prev => {
+        const live = prev.find(r => r.id === created.id);
+        const merged = live
+          ? { ...created, ...live, isMine: created.isMine, hasUpvoted: created.hasUpvoted, hasVerified: created.hasVerified, distanceKm: created.distanceKm }
+          : created;
+        return [merged, ...prev.filter(r => r.id !== created.id)];
+      });
       if (updatedPoints !== null) {
         setPoints(updatedPoints);
         toast.success(`Report posted! +${POINTS.REPORT_CREATED} Hero Points`);
@@ -338,6 +348,25 @@ export default function MapView({
   };
 
   const { upvote: toggleUpvoteReport, verify: toggleVerifyReport } = useReportActions(setReports, setPoints);
+
+  // A report merged into another: drop it and show the original with the combined votes
+  const handleMerged = (id: string) => (into: Report) => {
+    setReports(prev => prev.filter(r => r.id !== id).map(r => (r.id === into.id ? { ...into, distanceKm: r.distanceKm } : r)));
+  };
+
+  // The reporter found their problem already reported: upvote that one and drop the draft
+  const handleUpvoteInstead = async (existing: { id: string; title: string }) => {
+    const known = reports.find(r => r.id === existing.id);
+    if (known?.isMine) {
+      toast.error('That one is your own report, so there is nothing to add.');
+      return;
+    }
+    if (!known?.hasUpvoted) await toggleUpvoteReport(existing.id);
+    setNewReportTitle('');
+    setNewReportDescription('');
+    setNewReportPhoto(null);
+    setShowNewReportModal(false);
+  };
 
   const filteredReports = reports.filter(r => {
     const matchesUrgency = urgencyFilter === 'All' || r.urgency === urgencyFilter;
@@ -633,6 +662,7 @@ export default function MapView({
                     </p>
                   </div>
                   <TriageNote report={rep} />
+                  <DuplicateNote report={rep} onMerged={handleMerged(rep.id)} />
 
                   {/* Optional coordinates indicator */}
                   {(rep.lat || rep.lng) && (
@@ -823,6 +853,14 @@ export default function MapView({
                   )}
                   <p className="text-[10px] text-slate-400">A photo helps neighbors verify it, and lets the AI compare it with the fix photo later.</p>
                 </div>
+
+                <SimilarReports
+                  at={selectedCoordinates}
+                  title={newReportTitle}
+                  description={newReportDesc}
+                  category={newReportCategory}
+                  onUpvoteInstead={handleUpvoteInstead}
+                />
 
                 <button 
                   type="submit"

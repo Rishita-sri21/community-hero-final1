@@ -1,6 +1,6 @@
 import AuditLog from '../models/AuditLog';
 
-export type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_EXPORT' | 'JOB_RETRIED';
+export type AuditEvent = 'AUTH_LOGIN' | 'AUTH_REGISTER' | 'REPORT_CREATED' | 'REPORT_VERIFIED' | 'REPORT_RESOLVED' | 'POINTS_TRANSACTION' | 'SECURITY_VIOLATION' | 'DB_EXPORT' | 'JOB_RETRIED' | 'REPORT_MERGED';
 
 // Records a security-relevant event in MongoDB. Never awaited by callers and never throws:
 // a failed log write must not fail the request that triggered it.

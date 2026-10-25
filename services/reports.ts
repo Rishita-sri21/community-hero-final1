@@ -53,6 +53,10 @@ export function toPublicReport(report: any, user?: any, distanceMeters?: number)
     isMine: isOwner(report, user),
     hasUpvoted: userId ? report.upvotedBy.some((id: unknown) => String(id) === userId) : false,
     hasVerified: userId ? report.verifiedBy.some((id: unknown) => String(id) === userId) : false,
+    possibleDuplicate:
+      report.status === 'open' && report.possibleDuplicate?.id
+        ? { id: String(report.possibleDuplicate.id), title: report.possibleDuplicate.title, score: report.possibleDuplicate.score }
+        : undefined,
     triage: report.triage?.status
       ? {
           status: report.triage.status,

@@ -57,6 +57,11 @@ export function useLiveReports(
       setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, ...report } : r)));
     });
 
+    source.addEventListener('report.merged', (e) => {
+      const { id, into } = JSON.parse((e as MessageEvent).data) as { id: string; into: Report };
+      setReports((prev) => prev.filter((r) => r.id !== id).map((r) => (r.id === into.id ? { ...r, ...into } : r)));
+    });
+
     source.addEventListener('report.resolved', (e) => {
       const { id } = JSON.parse((e as MessageEvent).data) as { id: string };
       setReports((prev) => prev.filter((r) => r.id !== id));

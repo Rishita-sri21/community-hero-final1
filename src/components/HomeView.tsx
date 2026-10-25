@@ -7,6 +7,7 @@ import { assetUrl, placeLabel } from '../config';
 import { toast, errorMessage } from '../lib/toast';
 import { GREEN_ACTIONS } from '../shared/catalog';
 import TriageNote from './TriageNote';
+import DuplicateNote from './DuplicateNote';
 import { useReportActions } from '../hooks/useReportActions';
 
 interface HomeViewProps {
@@ -287,6 +288,10 @@ export default function HomeView({
                 <h4 className="font-sans text-sm font-bold text-slate-800 mt-1">{rep.title}</h4>
                 <p className="font-sans text-xs text-slate-500 leading-relaxed line-clamp-3">{rep.description}</p>
                 <TriageNote report={rep} />
+                <DuplicateNote
+                  report={rep}
+                  onMerged={(into) => setReports(prev => prev.filter(r => r.id !== rep.id).map(r => (r.id === into.id ? { ...into, distanceKm: r.distanceKm } : r)))}
+                />
                 
                 {rep.image && (
                   <div className="h-28 rounded-xl overflow-hidden bg-slate-100">
