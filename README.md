@@ -9,6 +9,7 @@ A hyperlocal civic platform where residents report neighborhood problems (pothol
 - **Background job queue:** slow or flaky AI work runs from a durable queue stored in MongoDB (`services/jobs.ts`), not inside HTTP requests. Workers claim jobs atomically, hold a lease they renew while working, retry failures with exponential backoff and jitter, and take over jobs from a worker that crashed. Admins see the backlog, timings and failures, and can retry failed jobs.
 - **AI triage:** after a report is posted, a background job picks its category and urgency from the photo and text (Gemini), or with transparent keyword rules when Gemini isn't configured or keeps failing. It fills in only the fields the reporter left to "Let AI decide", and each report shows what decided it.
 - **Photo-verified resolution:** capture or upload a photo of the fix; a background job has Gemini Vision compare it with the reporter's "before" photo (when there is one) and judge whether the issue is resolved, while the app shows the job's progress. Resolved reports are kept with their fix photo, the model's confidence and the job that checked it.
+- **Duplicate detection:** while a report is being written, the app shows open reports within 150 m that look like the same problem, scored on distance, shared words (with character trigrams for typos and spacing) and category, with an "Upvote instead" button. A report posted anyway that scores high is flagged, and its reporter (or an admin) can merge it into the original, which closes it and moves its upvotes and verifications over in one atomic update.
 - **Live updates:** new reports, vote counts and resolutions appear for everyone as they happen, over Server-Sent Events.
 - **Mission planner:** scores open reports by urgency, community support and age, groups nearby ones (union-find clustering), picks the most valuable group within reach and orders its stops into a short walking route (nearest neighbor plus 2-opt and relocate moves), drawn on the map. Gemini, when configured, only phrases the briefing from those numbers.
 - **Neighborhood analytics:** open and resolved counts, resolution rate, median and average time to fix, a 7-day reported/resolved chart and a per-category breakdown, computed by a single MongoDB aggregation (`$geoNear` + `$facet`).
@@ -122,6 +123,8 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `POST` | `/api/reports`, `/api/reports/:id/upvote`, `/api/reports/:id/verify` | required |
 | `POST` | `/api/reports/resolve` | required; answers `202` with the queued photo-check job |
 | `GET` | `/api/jobs/:id` | required; the job's creator or an admin |
+| `GET` | `/api/reports/similar?lat=&lng=&title=&description=&category=` | required |
+| `POST` | `/api/reports/:id/duplicate` (`{ of }`) | the report's reporter or an admin |
 | `POST` | `/api/actions/green`, `/api/rewards/redeem` | required |
 | `POST` | `/api/users/update-district`, `/join-squad`, `/leave-squad` | required |
 | `GET` | `/api/leaderboard` | public |
@@ -133,7 +136,7 @@ Point changes are single atomic MongoDB updates (`$inc`, conditional `findOneAnd
 | `GET` | `/api/notifications`; `POST` `/api/notifications/read` | required |
 | `GET` | `/api/admin/audit-logs`, `/api/admin/db/status`, `/api/admin/export/:collection`, `/api/admin/jobs` | Civil Servant or Organizer |
 | `POST` | `/api/admin/jobs/:id/retry` | Civil Servant or Organizer |
-| `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`) |
+| `GET` | `/api/events` | public (Server-Sent Events: `report.created`, `report.updated`, `report.resolved`, `report.merged`) |
 | `GET` | `/api/health` | public (503 while the database is unreachable) |
 
 ## Known limitations
@@ -143,6 +146,7 @@ This project is being upgraded in stages. Current known gaps:
 - Green actions are self-reported, so they're limited to once per action per day rather than proven.
 - Mission distances are straight lines between stops; walking time adds 30% for streets. A routing engine (for example OSRM) would give real street paths.
 - Accounts whose district isn't one of the onboarding neighborhoods (older accounts, and demo accounts created before this change) see the map centered on New York, and there's no screen yet to change your neighborhood.
+- Duplicate matching compares words, not meaning, so "no light on the corner" and "broken streetlight" only match through distance and category. Comparing text embeddings would catch paraphrases. Merging keeps the points the duplicate's reporter already earned.
 - Jobs run at least once, not exactly once. Handlers are written to be safe to repeat, but if the server dies between resolving a report and paying the fixer, the retry won't pay again. Closing that gap needs a MongoDB transaction (a replica set) or a points ledger.
 - The app follows a photo check by polling the job every second. Pushing the result over the live-update stream would remove the polling.
 - Live updates go through the server's memory, so they reach everyone only while the backend runs as a single instance. Scaling out would need a shared channel such as MongoDB change streams.

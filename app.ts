@@ -25,6 +25,7 @@ import Job, { type JobDoc } from './models/Job';
 import { enqueue, queueStats, retryFailedJob, toPublicJob } from './services/jobs';
 import { JOB_TYPES, registerJobHandlers } from './services/jobHandlers';
 import { getVision } from './services/vision';
+import { DUPLICATE_RADIUS_M, LIKELY_THRESHOLD, findSimilarReports, mergeDuplicate } from './services/duplicates';
 import { findImage, imageErrorMessage, parseDataUrlImage, saveDataUrlImage, storeImage } from './services/images';
 
 // Load environment variables
@@ -452,6 +453,20 @@ app.post('/api/reports', protect, async (req: any, res) => {
   const userId = req.user._id;
   const reportsToday = await Report.countDocuments({ 'reporter.id': userId, createdAt: { $gte: startOfToday() } });
 
+  // The app warns about likely duplicates before posting; if the reporter posts anyway,
+  // the best match is kept on the report so its reporter or an admin can merge them later
+  const similar = await findSimilarReports({
+    title: reportData.title,
+    description: reportData.description,
+    category: reportData.category,
+    lat: reportData.lat,
+    lng: reportData.lng,
+  }).catch((err) => {
+    console.error('Duplicate check failed:', err);
+    return [];
+  });
+  const likely = similar[0]?.score >= LIKELY_THRESHOLD ? similar[0] : undefined;
+
   const report = await Report.create({
     reporter: { id: userId, name: req.user.name, avatar: req.user.avatar },
     title: reportData.title.trim(),
@@ -464,6 +479,7 @@ app.post('/api/reports', protect, async (req: any, res) => {
     icon: iconForCategory(category),
     image,
     triage: { status: 'pending', autoFields },
+    possibleDuplicate: likely ? { id: likely.id, title: likely.title, score: likely.score } : undefined,
   });
 
   // Category and urgency from the photo and text, in the background, so posting stays fast.
@@ -482,7 +498,53 @@ app.post('/api/reports', protect, async (req: any, res) => {
 
   const publicReport = toPublicReport(report, req.user);
   publish({ type: 'report.created', report: publicReport });
-  res.status(201).json({ report: publicReport, points: updatedPoints });
+  res.status(201).json({ report: publicReport, points: updatedPoints, similar });
+});
+
+// Open reports near ?lat=&lng= that look like the one being written (?title=&description=&category=)
+app.get('/api/reports/similar', protect, async (req: any, res) => {
+  const at = nearFromQuery(req.query);
+  const title = typeof req.query.title === 'string' ? req.query.title.slice(0, 200) : '';
+  const description = typeof req.query.description === 'string' ? req.query.description.slice(0, 2000) : '';
+  if (!at || !title.trim()) {
+    return res.status(400).json({ error: 'lat, lng and title are required' });
+  }
+  try {
+    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+    res.json({ matches: await findSimilarReports({ ...at, title, description, category }), radiusMeters: DUPLICATE_RADIUS_M });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to look for similar reports' });
+  }
+});
+
+// Closes a report as a duplicate of another open report, moving its upvotes and verifications
+// over. Allowed for the duplicate's reporter and for admins.
+app.post('/api/reports/:id/duplicate', protect, async (req: any, res) => {
+  const { of } = req.body ?? {};
+  if (!isValidObjectId(req.params.id) || typeof of !== 'string' || !isValidObjectId(of)) {
+    return res.status(400).json({ error: 'Say which report this duplicates' });
+  }
+  if (req.params.id === of) {
+    return res.status(400).json({ error: 'A report cannot duplicate itself' });
+  }
+  const duplicate = await Report.findById(req.params.id).select('reporter status').lean();
+  if (!duplicate || duplicate.status !== 'open') {
+    return res.status(404).json({ error: 'Report not found' });
+  }
+  const isReporter = String(duplicate.reporter?.id) === String(req.user._id);
+  if (!isReporter && req.user.role !== 'Organizer' && req.user.role !== 'Civil Servant') {
+    return res.status(403).json({ error: 'Only the reporter or an admin can merge this report' });
+  }
+
+  const merged = await mergeDuplicate(req.params.id, of);
+  if (!merged) {
+    return res.status(409).json({ error: 'One of the reports is no longer open' });
+  }
+  logAuditEvent('REPORT_MERGED', `Report ${req.params.id} merged into ${of} by ${req.user.email}`, true, req.user.email, req.ip);
+  const target = toPublicReport(merged.target, req.user);
+  publish({ type: 'report.merged', id: req.params.id, into: target });
+  res.json({ report: target });
 });
 
 // Upvote and verify share their rules: once per person, never on your own report.
@@ -741,12 +803,13 @@ app.get('/api/admin/db/status', async (req: any, res) => {
     await db.admin().ping();
     const pingMs = Number(process.hrtime.bigint() - pingStart) / 1e6;
 
-    const [build, stats, usersCount, openCount, resolvedCount, auditLogsCount, notificationsCount, jobsCount, lastExport] = await Promise.all([
+    const [build, stats, usersCount, openCount, resolvedCount, duplicateCount, auditLogsCount, notificationsCount, jobsCount, lastExport] = await Promise.all([
       db.admin().command({ buildInfo: 1 }).catch(() => null),
       db.stats(),
       User.countDocuments(),
       Report.countDocuments({ status: 'open' }),
       Report.countDocuments({ status: 'resolved' }),
+      Report.countDocuments({ status: 'duplicate' }),
       AuditLog.countDocuments(),
       Notification.countDocuments(),
       Job.countDocuments(),
@@ -764,7 +827,7 @@ app.get('/api/admin/db/status', async (req: any, res) => {
       liveConnections: listenerCount(),
       collections: [
         { name: 'users', documents: usersCount, note: 'passwords hashed with bcrypt (cost 10)' },
-        { name: 'reports', documents: openCount + resolvedCount, note: `${openCount} open, ${resolvedCount} resolved; 2dsphere index` },
+        { name: 'reports', documents: openCount + resolvedCount + duplicateCount, note: `${openCount} open, ${resolvedCount} resolved, ${duplicateCount} merged as duplicates; 2dsphere index` },
         { name: 'auditlogs', documents: auditLogsCount, note: 'expire after 90 days' },
         { name: 'notifications', documents: notificationsCount, note: 'expire after 60 days' },
         { name: 'jobs', documents: jobsCount, note: 'background work queue; finished jobs expire after 7 days' },

@@ -9,7 +9,9 @@ import type { Report } from '../src/types';
 export type LiveEvent =
   | { type: 'report.created'; report: Report }
   | { type: 'report.updated'; report: Report }
-  | { type: 'report.resolved'; id: string };
+  | { type: 'report.resolved'; id: string }
+  // A report was closed as a duplicate; `into` is the report it was merged into, with the combined votes
+  | { type: 'report.merged'; id: string; into: Report };
 
 const bus = new EventEmitter();
 bus.setMaxListeners(0); // one listener per open browser tab
@@ -21,6 +23,10 @@ export function publish(event: LiveEvent) {
   if ('report' in event) {
     const { isMine, hasUpvoted, hasVerified, distanceKm, ...shared } = event.report;
     event = { ...event, report: shared };
+  }
+  if (event.type === 'report.merged') {
+    const { isMine, hasUpvoted, hasVerified, distanceKm, ...shared } = event.into;
+    event = { ...event, into: shared };
   }
   bus.emit('event', event);
 }
